@@ -13,7 +13,7 @@ use bitcoin::{
     Amount, FeeRate, OutPoint, Sequence, TapSighash, Transaction, TxIn, TxOut, Witness,
 };
 use errors::Error;
-use musig2::KeyAggContext;
+use musig2::{AggNonce, KeyAggContext, PartialSignature, SecNonce};
 use secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use secp256k1::XOnlyPublicKey;
 use sha2::Digest as _;
@@ -112,11 +112,14 @@ impl EventAnnouncment {
     pub fn outcome_secret(
         &self,
         index: usize,
-        oracle_seckey: Scalar,
-        secnonce: Scalar,
+        oracle_seckey: impl Into<Scalar>,
+        nonce: impl Into<Scalar>,
     ) -> Option<MaybeScalar> {
+        let oracle_seckey = oracle_seckey.into();
+        let nonce = nonce.into();
+
         if oracle_seckey.base_point_mul() != self.oracle_pubkey
-            || secnonce.base_point_mul() != self.nonce_point
+            || nonce.base_point_mul() != self.nonce_point
         {
             return None;
         }
@@ -127,7 +130,7 @@ impl EventAnnouncment {
             &self.oracle_pubkey,
             msg,
         );
-        Some(secnonce + e * oracle_seckey)
+        Some(nonce + e * oracle_seckey)
     }
 }
 
@@ -141,11 +144,20 @@ pub type PayoutWeights = BTreeMap<Player, u64>;
 pub struct FundingSpendInfo<'e> {
     key_agg_ctx: KeyAggContext,
     event: &'e EventAnnouncment,
+    funding_value: Amount,
 }
 
 impl<'e> FundingSpendInfo<'e> {
-    fn new(key_agg_ctx: KeyAggContext, event: &'e EventAnnouncment) -> FundingSpendInfo<'e> {
-        FundingSpendInfo { key_agg_ctx, event }
+    fn new(
+        key_agg_ctx: KeyAggContext,
+        event: &'e EventAnnouncment,
+        funding_value: Amount,
+    ) -> FundingSpendInfo<'e> {
+        FundingSpendInfo {
+            key_agg_ctx,
+            event,
+            funding_value,
+        }
     }
 
     /// Return a reference to the [`KeyAggContext`] used to spend the multisig funding output.
@@ -166,11 +178,10 @@ impl<'e> FundingSpendInfo<'e> {
     pub fn sighash_tx_outcome(
         &self,
         outcome_tx: &Transaction,
-        funding_value: Amount,
     ) -> Result<TapSighash, bitcoin::sighash::Error> {
         let funding_prevouts = [TxOut {
             script_pubkey: self.script_pubkey(),
-            value: funding_value,
+            value: self.funding_value,
         }];
 
         SighashCache::new(outcome_tx).taproot_key_spend_signature_hash(
@@ -525,10 +536,6 @@ impl ContractParameters {
         Ok(script)
     }
 
-    pub fn spend_info_funding<'s>(&'s self) -> Result<FundingSpendInfo<'s>, Error> {
-        Ok(FundingSpendInfo::new(self.key_agg_ctx_all()?, &self.event))
-    }
-
     pub fn spend_info_outcome(&self, outcome_index: usize) -> Result<OutcomeSpendInfo, Error> {
         let payout_map = self.outcome_payouts.get(outcome_index).ok_or(Error)?;
         let winners = payout_map.keys().copied();
@@ -547,167 +554,18 @@ impl ContractParameters {
         )
     }
 
-    /// Construct an outcome transaction for the given outcome index. This TX spends the
-    /// funding transaction, and pays to the shared control of the market maker, plus
-    /// the winners for this outcome.
-    pub fn tx_outcome(
-        &self,
-        outcome_index: usize,
+    /// Convert the contract params into a funded contract, which identifies the specific
+    /// funding TX output from which all other transactions in the contract will be derived.
+    pub fn with_funding(
+        self,
         funding_outpoint: OutPoint,
         funding_value: Amount,
-    ) -> Result<Transaction, Error> {
-        let funding_input = TxIn {
-            previous_output: funding_outpoint,
-            sequence: Sequence::MAX,
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
-        };
-
-        // TODO cache OutcomeSpendInfo
-        let outcome_spk = self.spend_info_outcome(outcome_index)?.script_pubkey();
-
-        let tx_weight = bitcoin::transaction::predict_weight(
-            [bitcoin::transaction::InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
-            [outcome_spk.len()],
-        );
-        let fee = self.fee_rate.fee_wu(tx_weight).ok_or(Error)?;
-        if funding_value <= fee || funding_value - fee <= outcome_spk.dust_value() {
-            return Err(Error);
+    ) -> ContractWithFunding {
+        ContractWithFunding {
+            params: self,
+            funding_outpoint,
+            funding_value,
         }
-
-        let outcome_output = TxOut {
-            value: funding_value - fee,
-            script_pubkey: outcome_spk,
-        };
-
-        let outcome_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![funding_input],
-            output: vec![outcome_output],
-        };
-        Ok(outcome_tx)
-    }
-
-    // /// Partially sign the given outcome transaction.
-    // pub fn tx_outcome_sign_adaptor(
-    //     &self,
-    //     outcome_tx: &Transaction,
-    //     outcome_index: usize,
-    //     funding_value: Amount,
-    //     seckey: Scalar,
-    // ) -> Result<AdaptorSignature, Error> {
-    //     let funding_spend_info = self.spend_info_funding()?;
-
-    //     // Hash the outcome TX.
-    //     let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx, funding_value)?;
-
-    //     // Adaptor-signing the outcome TX sighash, locked by the oracle's outcome point.
-    //     let outcome_lock_point = contract.event.outcome_lock_point(outcome_index).unwrap();
-    // }
-
-    /// Construct a split transaction for the given outcome index. This transaction spends
-    /// an outcome TX and splits the contract into individual payout contracts between
-    /// the market maker and each individual winner.
-    pub fn tx_outcome_split(
-        &self,
-        outcome_index: usize,
-        outcome_tx: &Transaction,
-    ) -> Result<Transaction, Error> {
-        let outcome_input = TxIn {
-            previous_output: OutPoint {
-                txid: outcome_tx.txid(),
-                vout: 0,
-            },
-            sequence: Sequence::from_height(self.relative_locktime_block_delta),
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
-        };
-
-        // TODO cache OutcomeSpendInfo
-        let outcome_spend_info = self.spend_info_outcome(outcome_index)?;
-        let outcome_tx_value = outcome_tx.output.get(0).ok_or(Error)?.value;
-
-        let payout_map = self.outcome_payouts.get(outcome_index).ok_or(Error)?;
-
-        // Fee estimation
-        let input_weight = outcome_spend_info.input_weight_for_split_tx();
-        let spk_lengths = std::iter::repeat(P2TR_SCRIPT_PUBKEY_LEN).take(payout_map.len());
-        let fee_total = fee_calc_safe(self.fee_rate, [input_weight], spk_lengths)?;
-
-        // Mining fees are distributed equally among all winners, regardless of payout weight.
-        let fee_shared = fee_total / payout_map.len() as u64;
-        let total_payout_weight: u64 = payout_map.values().copied().sum();
-
-        // payout_map is a btree, so outputs are automatically sorted by player.
-        let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
-        for (&player, &payout_weight) in payout_map.iter() {
-            let script_pubkey = self.spend_info_split(player)?.script_pubkey();
-
-            // Payout amounts are computed by using relative weights.
-            let payout = outcome_tx_value * payout_weight / total_payout_weight;
-            let output_amount = fee_subtract_safe(payout, fee_shared, script_pubkey.dust_value())?;
-
-            split_tx_outputs.push(TxOut {
-                value: output_amount,
-                script_pubkey,
-            });
-        }
-
-        let split_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![outcome_input],
-            output: split_tx_outputs,
-        };
-        Ok(split_tx)
-    }
-
-    /// Constructs a _reclaim transaction_ which returns the funds to the market maker
-    /// after a given outcome TX's output timelock has expired without any ticketholders
-    /// using the split TX.
-    ///
-    /// Technically the market maker does not need to use this particular method to reclaim
-    /// their money. Once the timelock has elapsed, they have control of the outcome TX
-    /// output, and can spend it however they like.
-    pub fn tx_outcome_reclaim(
-        &self,
-        outcome_index: usize,
-        outcome_tx: &Transaction,
-        dest_script_pubkey: ScriptBuf,
-        fee_rate: FeeRate,
-    ) -> Result<Transaction, Error> {
-        let outcome_input = TxIn {
-            previous_output: OutPoint {
-                txid: outcome_tx.txid(),
-                vout: 0,
-            },
-            sequence: Sequence::from_height(2 * self.relative_locktime_block_delta),
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
-        };
-
-        // TODO cache OutcomeSpendInfo
-        let outcome_spend_info = self.spend_info_outcome(outcome_index)?;
-        let outcome_tx_value = outcome_tx.output.get(0).ok_or(Error)?.value;
-
-        let input_weight = outcome_spend_info.input_weight_for_reclaim_tx();
-        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
-        let output_value =
-            fee_subtract_safe(outcome_tx_value, fee, dest_script_pubkey.dust_value())?;
-
-        let reclaim_output = TxOut {
-            value: output_value,
-            script_pubkey: dest_script_pubkey,
-        };
-
-        let reclaim_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![outcome_input],
-            output: vec![reclaim_output],
-        };
-        Ok(reclaim_tx)
     }
 
     /// Construct an input to spend a given player's output of the split transaction
@@ -826,6 +684,293 @@ impl ContractParameters {
 
     /// TODO
     pub fn tx_expire(&self) -> Result<Transaction, Error> {
+        todo!();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWithFunding {
+    params: ContractParameters,
+    funding_outpoint: OutPoint,
+    funding_value: Amount,
+}
+
+impl ContractWithFunding {
+    pub fn spend_info_funding<'s>(&'s self) -> Result<FundingSpendInfo<'s>, Error> {
+        Ok(FundingSpendInfo::new(
+            self.params.key_agg_ctx_all()?,
+            &self.params.event,
+            self.funding_value,
+        ))
+    }
+
+    /// Construct an outcome transaction for the given outcome index. This TX spends the
+    /// funding transaction, and pays to the shared control of the market maker, plus
+    /// the winners for this outcome.
+    pub fn tx_outcome(&self, outcome_index: usize) -> Result<Transaction, Error> {
+        let funding_input = TxIn {
+            previous_output: self.funding_outpoint.clone(),
+            sequence: Sequence::MAX,
+            script_sig: ScriptBuf::new(),
+            witness: Witness::new(),
+        };
+
+        // TODO cache OutcomeSpendInfo
+        let outcome_spk = self
+            .params
+            .spend_info_outcome(outcome_index)?
+            .script_pubkey();
+
+        let input_weights = [bitcoin::transaction::InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
+        let fee = fee_calc_safe(self.params.fee_rate, input_weights, [outcome_spk.len()])?;
+        let output_value = fee_subtract_safe(self.funding_value, fee, outcome_spk.dust_value())?;
+
+        let outcome_output = TxOut {
+            value: output_value,
+            script_pubkey: outcome_spk,
+        };
+
+        let outcome_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![funding_input],
+            output: vec![outcome_output],
+        };
+        Ok(outcome_tx)
+    }
+
+    /// Produce a [`ContractWithOutcomes`] by constructing a set of unsigned
+    /// outcome transactions which spend from the funding TX.
+    pub fn with_outcomes(self) -> Result<ContractWithOutcomes, Error> {
+        let n_outcomes = self.params.event.outcome_messages.len();
+        let outcome_transactions = (0..n_outcomes)
+            .map(|outcome_index| self.tx_outcome(outcome_index))
+            .collect::<Result<_, Error>>()?;
+
+        let contract = ContractWithOutcomes {
+            funding: self,
+            outcome_transactions,
+        };
+        Ok(contract)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ContractWithOutcomes {
+    /// Inherited from [`ContractWithFunding`].
+    funding: ContractWithFunding,
+
+    /// The outcome transactions.
+    outcome_transactions: Vec<Transaction>,
+}
+
+impl ContractWithOutcomes {
+    pub fn outcome_txs(&self) -> &[Transaction] {
+        &self.outcome_transactions
+    }
+
+    pub fn sign_all_outcomes<'a>(
+        &self,
+        seckey: impl Into<Scalar>,
+        secnonces: impl IntoIterator<Item = SecNonce>,
+        aggnonces: impl IntoIterator<Item = &'a AggNonce>,
+    ) -> Result<Vec<PartialSignature>, Error> {
+        // Confirm the key is a part of the group.
+        let seckey = seckey.into();
+        let funding_spend_info = self.funding.spend_info_funding()?;
+        funding_spend_info
+            .key_agg_ctx()
+            .pubkey_index(seckey.base_point_mul())
+            .ok_or(Error)?;
+
+        let n_outcomes = self.funding.params.event.outcome_messages.len();
+        let mut outcome_partial_sigs = Vec::with_capacity(n_outcomes);
+
+        let mut aggnonce_iter = aggnonces.into_iter();
+        let mut secnonce_iter = secnonces.into_iter();
+
+        for (outcome_index, outcome_tx) in self.outcome_txs().into_iter().enumerate() {
+            let aggnonce = aggnonce_iter.next().ok_or(Error)?; // not enough aggnonces
+            let secnonce = secnonce_iter.next().ok_or(Error)?; // not enough secnonces
+
+            // All outcome TX signatures should be locked by the oracle's outcome point.
+            let outcome_lock_point = self
+                .funding
+                .params
+                .event
+                .outcome_lock_point(outcome_index)
+                .ok_or(Error)?;
+
+            // Hash the outcome TX.
+            let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
+
+            // partially sign the sighash.
+            let partial_sig = musig2::adaptor::sign_partial(
+                funding_spend_info.key_agg_ctx(),
+                seckey,
+                secnonce,
+                aggnonce,
+                outcome_lock_point,
+                sighash,
+            )?;
+
+            outcome_partial_sigs.push(partial_sig);
+        }
+        Ok(outcome_partial_sigs)
+    }
+
+    /// Constructs a _reclaim transaction_ which returns the funds to the market maker
+    /// after a given outcome TX's output timelock has expired without any ticketholders
+    /// using the split TX.
+    ///
+    /// Technically the market maker does not need to use this particular method to reclaim
+    /// their money. Once the timelock has elapsed, they have control of the outcome TX
+    /// output, and can spend it however they like.
+    pub fn tx_outcome_reclaim(
+        &self,
+        outcome_index: usize,
+        outcome_tx: &Transaction,
+        dest_script_pubkey: ScriptBuf,
+        fee_rate: FeeRate,
+    ) -> Result<Transaction, Error> {
+        let outcome_input = TxIn {
+            previous_output: OutPoint {
+                txid: outcome_tx.txid(),
+                vout: 0,
+            },
+            sequence: Sequence::from_height(2 * self.funding.params.relative_locktime_block_delta),
+            script_sig: ScriptBuf::new(),
+            witness: Witness::new(),
+        };
+
+        // TODO cache OutcomeSpendInfo
+        let outcome_spend_info = self.funding.params.spend_info_outcome(outcome_index)?;
+        let outcome_tx_value = outcome_tx.output.get(0).ok_or(Error)?.value;
+
+        let input_weight = outcome_spend_info.input_weight_for_reclaim_tx();
+        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
+        let output_value =
+            fee_subtract_safe(outcome_tx_value, fee, dest_script_pubkey.dust_value())?;
+
+        let reclaim_output = TxOut {
+            value: output_value,
+            script_pubkey: dest_script_pubkey,
+        };
+
+        let reclaim_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![outcome_input],
+            output: vec![reclaim_output],
+        };
+        Ok(reclaim_tx)
+    }
+
+    /// Construct a split transaction for the given outcome index. This transaction spends
+    /// an outcome TX and splits the contract into individual payout contracts between
+    /// the market maker and each individual winner.
+    pub fn tx_outcome_split(&self, outcome_index: usize) -> Result<Transaction, Error> {
+        let outcome_tx = self.outcome_transactions.get(outcome_index).ok_or(Error)?;
+
+        let outcome_input = TxIn {
+            previous_output: OutPoint {
+                txid: outcome_tx.txid(),
+                vout: 0,
+            },
+            sequence: Sequence::from_height(self.funding.params.relative_locktime_block_delta),
+            script_sig: ScriptBuf::new(),
+            witness: Witness::new(),
+        };
+
+        // TODO cache OutcomeSpendInfo
+        let outcome_spend_info = self.funding.params.spend_info_outcome(outcome_index)?;
+        let outcome_tx_value = outcome_tx.output.get(0).ok_or(Error)?.value;
+
+        let payout_map = self
+            .funding
+            .params
+            .outcome_payouts
+            .get(outcome_index)
+            .ok_or(Error)?;
+
+        // Fee estimation
+        let input_weight = outcome_spend_info.input_weight_for_split_tx();
+        let spk_lengths = std::iter::repeat(P2TR_SCRIPT_PUBKEY_LEN).take(payout_map.len());
+        let fee_total = fee_calc_safe(self.funding.params.fee_rate, [input_weight], spk_lengths)?;
+
+        // Mining fees are distributed equally among all winners, regardless of payout weight.
+        let fee_shared = fee_total / payout_map.len() as u64;
+        let total_payout_weight: u64 = payout_map.values().copied().sum();
+
+        // payout_map is a btree, so outputs are automatically sorted by player.
+        let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
+        for (&player, &payout_weight) in payout_map.iter() {
+            let script_pubkey = self
+                .funding
+                .params
+                .spend_info_split(player)?
+                .script_pubkey();
+
+            // Payout amounts are computed by using relative weights.
+            let payout = outcome_tx_value * payout_weight / total_payout_weight;
+            let output_amount = fee_subtract_safe(payout, fee_shared, script_pubkey.dust_value())?;
+
+            split_tx_outputs.push(TxOut {
+                value: output_amount,
+                script_pubkey,
+            });
+        }
+
+        let split_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![outcome_input],
+            output: split_tx_outputs,
+        };
+        Ok(split_tx)
+    }
+
+    pub fn with_splits(self) -> Result<ContractWithSplits, Error> {
+        let split_transactions = (0..self.outcome_txs().len())
+            .map(|outcome_index| self.tx_outcome_split(outcome_index))
+            .collect::<Result<_, Error>>()?;
+
+        let contract = ContractWithSplits {
+            outcomes: self,
+            split_transactions,
+        };
+        Ok(contract)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ContractWithSplits {
+    /// Inherited from [`ContractWithOutcomes`].
+    outcomes: ContractWithOutcomes,
+
+    /// The split transactions. Each outcome requires a single split transaction,
+    /// but each split TX requires a variable number of signatures (one per
+    /// winner) so that each winner has the option to unilaterally broadcast
+    /// the split transaction once they know their ticket secret.
+    split_transactions: Vec<Transaction>,
+}
+
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct WinCondition {
+    pub outcome_index: usize,
+    pub winner: Player,
+}
+
+impl ContractWithSplits {
+    pub fn split_txs(&self) -> &[Transaction] {
+        &self.split_transactions
+    }
+
+    /// Sign every split transaction needed. Players only need to sign
+    /// split transactions for outcomes in which they are paid out
+    /// by the DLC.
+    pub fn sign_all_splits(&self) -> Result<BTreeMap<WinCondition, PartialSignature>, Error> {
+        // TODO
         todo!();
     }
 }
@@ -1043,7 +1188,6 @@ mod tests {
     #[test]
     fn test_tx_outcome() {
         let test_contract = TestContract::new_simple_duel();
-        let mut contract = test_contract.contract_params();
 
         let funding_outpoint = OutPoint {
             txid: "0000000000000000000000000000000000000000000000000000000000000000"
@@ -1053,11 +1197,15 @@ mod tests {
         };
         let funding_value = Amount::from_sat(5_000_000);
 
+        let mut contract = test_contract
+            .contract_params()
+            .with_funding(funding_outpoint, funding_value);
+
         // Player 1 wins
         let outcome_index = 0;
 
         let mut outcome_tx = contract
-            .tx_outcome(outcome_index, funding_outpoint, funding_value)
+            .tx_outcome(outcome_index)
             .expect("failed to build outcome TX");
 
         let expected_tx = Transaction {
@@ -1081,9 +1229,10 @@ mod tests {
 
         {
             // Player order should not matter.
-            (contract.players[0], contract.players[1]) = (contract.players[1], contract.players[0]);
+            (contract.params.players[0], contract.params.players[1]) =
+                (contract.params.players[1], contract.params.players[0]);
             let outcome_tx = contract
-                .tx_outcome(outcome_index, funding_outpoint, funding_value)
+                .tx_outcome(outcome_index)
                 .expect("failed to build outcome TX");
             assert_eq!(outcome_tx, expected_tx);
         }
@@ -1092,15 +1241,21 @@ mod tests {
 
         // Hashing the outcome TX.
         let sighash = funding_spend_info
-            .sighash_tx_outcome(&outcome_tx, funding_value)
+            .sighash_tx_outcome(&outcome_tx)
             .expect("error producing sighash on outcome TX");
 
         // Adaptor-signing the outcome TX sighash, locked by the oracle's outcome point.
-        let outcome_lock_point = contract.event.outcome_lock_point(outcome_index).unwrap();
+        let outcome_lock_point = contract
+            .params
+            .event
+            .outcome_lock_point(outcome_index)
+            .unwrap();
+
         let seckeys = [&test_contract.market_maker_key]
             .into_iter()
             .chain(&test_contract.player_keys)
             .copied();
+
         let adaptor_signature = musig2_group_sign_adaptor(
             funding_spend_info.key_agg_ctx(),
             sighash,
@@ -1109,6 +1264,7 @@ mod tests {
         );
 
         let outcome_secret = contract
+            .params
             .event
             .outcome_secret(
                 outcome_index,

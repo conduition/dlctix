@@ -22,6 +22,12 @@ impl From<musig2::errors::TweakError> for Error {
     }
 }
 
+impl From<musig2::errors::SigningError> for Error {
+    fn from(_: musig2::errors::SigningError) -> Self {
+        Error
+    }
+}
+
 impl From<bitcoin::taproot::TaprootBuilderError> for Error {
     fn from(_: bitcoin::taproot::TaprootBuilderError) -> Self {
         Error
@@ -30,6 +36,12 @@ impl From<bitcoin::taproot::TaprootBuilderError> for Error {
 
 impl From<bitcoin::taproot::IncompleteBuilderError> for Error {
     fn from(_: bitcoin::taproot::IncompleteBuilderError) -> Self {
+        Error
+    }
+}
+
+impl From<bitcoin::sighash::Error> for Error {
+    fn from(_: bitcoin::sighash::Error) -> Self {
         Error
     }
 }
