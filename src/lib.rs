@@ -7,7 +7,8 @@ use bitcoin::{
     script::ScriptBuf,
     sighash::{Prevouts, SighashCache, TapSighashType},
     taproot::{
-        LeafVersion, TaprootSpendInfo, TAPROOT_CONTROL_BASE_SIZE, TAPROOT_CONTROL_NODE_SIZE,
+        LeafVersion, TapLeafHash, TaprootSpendInfo, TAPROOT_CONTROL_BASE_SIZE,
+        TAPROOT_CONTROL_NODE_SIZE,
     },
     transaction::InputWeightPrediction,
     Amount, FeeRate, OutPoint, Sequence, TapSighash, Transaction, TxIn, TxOut, Witness,
@@ -15,9 +16,9 @@ use bitcoin::{
 use errors::Error;
 use musig2::{AggNonce, KeyAggContext, PartialSignature, SecNonce};
 use secp::{MaybePoint, MaybeScalar, Point, Scalar};
-use secp256k1::XOnlyPublicKey;
 use sha2::Digest as _;
-use std::collections::BTreeMap;
+
+use std::collections::{BTreeMap, BTreeSet};
 
 const P2TR_SCRIPT_PUBKEY_LEN: usize = 34;
 
@@ -38,21 +39,21 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 ///
 /// Using lower values is more efficient on-chain, but less secure against
 /// brute force attacks.
-pub const TICKET_PREIMAGE_SIZE: usize = 32;
+pub const PREIMAGE_SIZE: usize = 32;
 
 /// A handy type-alias for ticket preimages. We use random 32 byte preimages
 /// for best compatibility with lightning network clients.
-pub type TicketPreimage = [u8; TICKET_PREIMAGE_SIZE];
+pub type Preimage = [u8; PREIMAGE_SIZE];
 
-pub fn preimage_random<R: rand::RngCore + rand::CryptoRng>(rng: &mut R) -> TicketPreimage {
-    let mut preimage = [0u8; TICKET_PREIMAGE_SIZE];
+pub fn preimage_random<R: rand::RngCore + rand::CryptoRng>(rng: &mut R) -> Preimage {
+    let mut preimage = [0u8; PREIMAGE_SIZE];
     rng.fill_bytes(&mut preimage);
     preimage
 }
 
 /// Parse a preimage from a hex string.
-pub fn preimage_from_hex(s: &str) -> Result<TicketPreimage, hex::FromHexError> {
-    let mut preimage = [0u8; TICKET_PREIMAGE_SIZE];
+pub fn preimage_from_hex(s: &str) -> Result<Preimage, hex::FromHexError> {
+    let mut preimage = [0u8; PREIMAGE_SIZE];
     hex::decode_to_slice(s, &mut preimage)?;
     Ok(preimage)
 }
@@ -74,6 +75,12 @@ pub struct Player {
     /// The ticket hashes used for HTLCs. To buy into the DLC, players must
     /// purchase the preimages of these hashes.
     pub ticket_hash: [u8; 32],
+
+    /// A hash used for unlocking the split TX output early. To allow winning
+    /// players to receive off-chain payouts, they must provide this `payout_hash`,
+    /// for which they know the preimage. By selling the preimage to the market maker,
+    /// they allow the market maker to reclaim the on-chain funds.
+    pub payout_hash: [u8; 32],
 }
 
 /// An oracle's announcement of a future event.
@@ -134,30 +141,31 @@ impl EventAnnouncment {
     }
 }
 
-/// Represents a mapping of player to payout weight for a given outcome.
-///
-/// A player's payout is proportional to the size of their payout weight
-/// in comparison to the payout weights of all other winners.
-pub type PayoutWeights = BTreeMap<Player, u64>;
-
 #[derive(Debug, Clone)]
-pub struct FundingSpendInfo<'e> {
+pub struct FundingSpendInfo {
     key_agg_ctx: KeyAggContext,
-    event: &'e EventAnnouncment,
     funding_value: Amount,
 }
 
-impl<'e> FundingSpendInfo<'e> {
-    fn new(
-        key_agg_ctx: KeyAggContext,
-        event: &'e EventAnnouncment,
+impl FundingSpendInfo {
+    fn new<'p>(
+        market_maker: &MarketMaker,
+        players: impl IntoIterator<Item = &'p Player>,
         funding_value: Amount,
-    ) -> FundingSpendInfo<'e> {
-        FundingSpendInfo {
+    ) -> Result<FundingSpendInfo, Error> {
+        let mut pubkeys: Vec<Point> = players
+            .into_iter()
+            .map(|player| player.pubkey)
+            .chain([market_maker.pubkey])
+            .collect();
+        pubkeys.sort();
+
+        let key_agg_ctx = KeyAggContext::new(pubkeys)?;
+
+        Ok(FundingSpendInfo {
             key_agg_ctx,
-            event,
             funding_value,
-        }
+        })
     }
 
     /// Return a reference to the [`KeyAggContext`] used to spend the multisig funding output.
@@ -210,7 +218,8 @@ impl<'e> FundingSpendInfo<'e> {
 /// player's ticket point.
 #[derive(Debug, Clone)]
 pub struct OutcomeSpendInfo {
-    key_agg_ctx: KeyAggContext,
+    untweaked_ctx: KeyAggContext,
+    tweaked_ctx: KeyAggContext,
     spend_info: TaprootSpendInfo,
     winner_split_scripts: BTreeMap<Player, ScriptBuf>,
     reclaim_script: ScriptBuf,
@@ -278,7 +287,7 @@ impl OutcomeSpendInfo {
             weighted_script_leaves,
         )?;
 
-        let tweaked_ctx = untweaked_ctx.with_taproot_tweak(
+        let tweaked_ctx = untweaked_ctx.clone().with_taproot_tweak(
             tr_spend_info
                 .merkle_root()
                 .expect("should always have merkle root")
@@ -286,7 +295,8 @@ impl OutcomeSpendInfo {
         )?;
 
         let outcome_spend_info = OutcomeSpendInfo {
-            key_agg_ctx: tweaked_ctx,
+            untweaked_ctx,
+            tweaked_ctx,
             spend_info: tr_spend_info,
             winner_split_scripts,
             reclaim_script,
@@ -327,7 +337,7 @@ impl OutcomeSpendInfo {
             0,
             [
                 SCHNORR_SIGNATURE_SIZE, // BIP340 schnorr signature
-                TICKET_PREIMAGE_SIZE,   // Ticket preimage
+                PREIMAGE_SIZE,          // Ticket preimage
                 outcome_script_len,     // Script
                 TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * max_taptree_depth, // Control block
             ],
@@ -354,22 +364,50 @@ impl OutcomeSpendInfo {
             ],
         )
     }
+
+    /// Compute the signature hash for a given split transaction.
+    pub fn sighash_tx_split(
+        &self,
+        split_tx: &Transaction,
+        winner: &Player,
+        outcome_value: Amount,
+    ) -> Result<TapSighash, Error> {
+        let outcome_prevouts = [TxOut {
+            script_pubkey: self.script_pubkey(),
+            value: outcome_value,
+        }];
+        let split_script = self.winner_split_scripts.get(winner).ok_or(Error)?;
+        let leaf_hash = TapLeafHash::from_script(split_script, LeafVersion::TapScript);
+
+        let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
+            0,
+            &Prevouts::All(&outcome_prevouts),
+            leaf_hash,
+            TapSighashType::Default,
+        )?;
+        Ok(sighash)
+    }
 }
 
 /// Represents a taproot contract for a specific player's split TX payout output.
-/// This tree only has two nodes:
+/// This tree has three nodes:
 ///
 /// 1. A relative-timelocked hash-lock which pays to the player if they know their ticket
 ///    preimage after one round of block delay.
 ///
 /// 2. A relative-timelock which pays to the market maker after two rounds of block delay.
+///
+/// 3. A hash-lock which pays to the market maker immediately if they learn the
+//     payout preimage from the player.
 #[derive(Debug, Clone)]
 pub struct SplitSpendInfo {
-    key_agg_ctx: KeyAggContext,
+    untweaked_ctx: KeyAggContext,
+    tweaked_ctx: KeyAggContext,
     spend_info: TaprootSpendInfo,
     winner: Player,
     win_script: ScriptBuf,
     reclaim_script: ScriptBuf,
+    sellback_script: ScriptBuf,
 }
 
 impl SplitSpendInfo {
@@ -415,14 +453,33 @@ impl SplitSpendInfo {
             .push_opcode(OP_CHECKSIG)
             .into_script();
 
-        let weighted_script_leaves = [(1, win_script.clone()), (1, reclaim_script.clone())];
+        // The sellback script, used by the market maker to reclaim their capital
+        // if the player agrees to sell their payout output from the split TX back
+        // to the market maker.
+        //
+        // Inputs: <mm_sig> <payout_preimage>
+        let sellback_script = bitcoin::script::Builder::new()
+            // Check payout preimage: OP_SHA256 <payout_hash> OP_EQUALVERIFY
+            .push_opcode(OP_SHA256)
+            .push_slice(winner.payout_hash)
+            .push_opcode(OP_EQUALVERIFY)
+            // Check signature: <mm_pubkey> OP_CHECKSIG
+            .push_slice(market_maker.pubkey.serialize_xonly())
+            .push_opcode(OP_CHECKSIG)
+            .into_script();
+
+        let weighted_script_leaves = [
+            (2, sellback_script.clone()),
+            (1, win_script.clone()),
+            (1, reclaim_script.clone()),
+        ];
         let tr_spend_info = TaprootSpendInfo::with_huffman_tree(
             secp256k1::SECP256K1,
             joint_payout_pubkey.into(),
             weighted_script_leaves,
         )?;
 
-        let tweaked_ctx = untweaked_ctx.with_taproot_tweak(
+        let tweaked_ctx = untweaked_ctx.clone().with_taproot_tweak(
             tr_spend_info
                 .merkle_root()
                 .expect("should always have merkle root")
@@ -430,11 +487,13 @@ impl SplitSpendInfo {
         )?;
 
         let split_spend_info = SplitSpendInfo {
-            key_agg_ctx: tweaked_ctx,
+            untweaked_ctx,
+            tweaked_ctx,
             spend_info: tr_spend_info,
             winner,
             win_script,
             reclaim_script,
+            sellback_script,
         };
         Ok(split_spend_info)
     }
@@ -459,7 +518,7 @@ impl SplitSpendInfo {
             0,
             [
                 SCHNORR_SIGNATURE_SIZE,   // BIP340 schnorr signature
-                TICKET_PREIMAGE_SIZE,     // Ticket preimage
+                PREIMAGE_SIZE,            // Ticket preimage
                 self.win_script.len(),    // Script
                 win_control_block.size(), // Control block
             ],
@@ -467,7 +526,7 @@ impl SplitSpendInfo {
     }
 
     /// Computes the input weight when spending an output of the split TX
-    /// as an input of the market maker's relcaim TX. This assumes the market
+    /// as an input of the market maker's reclaim TX. This assumes the market
     /// maker's reclaim script leaf is being used to unlock the taproot tree.
     pub fn input_weight_for_reclaim_tx(&self) -> InputWeightPrediction {
         let reclaim_control_block = self
@@ -486,7 +545,35 @@ impl SplitSpendInfo {
             ],
         )
     }
+
+    /// Computes the input weight when spending an output of the split TX
+    /// as an input of the sellback TX. This assumes the market maker's sellback
+    /// script leaf is being used to unlock the taproot tree.
+    pub fn input_weight_for_sellback_tx(&self) -> InputWeightPrediction {
+        let sellback_control_block = self
+            .spend_info
+            .control_block(&(self.sellback_script.clone(), LeafVersion::TapScript))
+            .expect("sellback script cannot be missing");
+
+        // The witness stack for the sellback TX which spends a split TX output is:
+        // <mm_sig> <payout_preimage> <script> <ctrl_block>
+        InputWeightPrediction::new(
+            0,
+            [
+                SCHNORR_SIGNATURE_SIZE,        // BIP340 schnorr signature
+                PREIMAGE_SIZE,                 // Payout preimage
+                self.sellback_script.len(),    // Script
+                sellback_control_block.size(), // Control block
+            ],
+        )
+    }
 }
+
+/// Represents a mapping of player to payout weight for a given outcome.
+///
+/// A player's payout is proportional to the size of their payout weight
+/// in comparison to the payout weights of all other winners.
+pub type PayoutWeights = BTreeMap<Player, u64>;
 
 #[derive(Debug, Clone)]
 pub struct ContractParameters {
@@ -509,49 +596,55 @@ pub struct ContractParameters {
     /// A default mining fee rate to be used for pre-signed transactions.
     pub fee_rate: FeeRate,
 
+    /// The amount of on-chain capital which the market maker will provide when funding
+    /// the initial multisig deposit contract.
+    pub funding_value: Amount,
+
     /// A reasonable number of blocks within which a transaction can confirm.
     /// Used for enforcing relative locktime timeout spending conditions.
     pub relative_locktime_block_delta: u16,
 }
 
 impl ContractParameters {
-    /// Construct a key aggregation context, jointly controlled by all players
-    /// and the market maker. This [`KeyAggContext`] is used for adaptor-signing
-    /// the outcome transactions, spending from the funding output.
-    pub fn key_agg_ctx_all(&self) -> Result<KeyAggContext, Error> {
-        let mut all_pubkeys: Vec<Point> = [self.market_maker.pubkey]
-            .into_iter()
-            .chain(self.players.iter().map(|player| player.pubkey))
+    pub fn spend_info_funding(&self) -> Result<FundingSpendInfo, Error> {
+        FundingSpendInfo::new(&self.market_maker, &self.players, self.funding_value)
+    }
+
+    /// Return the set of all win conditions which this pubkey will need to sign for.
+    pub fn controlling_win_conditions(&self, pubkey: Point) -> BTreeSet<WinCondition> {
+        // To sign as the market maker, the caller need only provide the correct secret key.
+        let is_market_maker = pubkey == self.market_maker.pubkey;
+
+        // This might contain multiple players if the same key joined the DLC
+        // with different ticket/payout hashes.
+        let controlling_players: BTreeSet<&Player> = self
+            .players
+            .iter()
+            .filter(|player| player.pubkey == pubkey)
             .collect();
-        all_pubkeys.sort();
-        Ok(KeyAggContext::new(all_pubkeys)?)
-    }
 
-    /// Construct a multisig funding script pubkey, jointly controlled
-    /// by all players and the market maker.
-    pub fn multisig_spk_funding(&self) -> Result<ScriptBuf, Error> {
-        let pubkey: Point = self.key_agg_ctx_all()?.aggregated_pubkey();
-        let untweaked_pk = XOnlyPublicKey::from(pubkey);
-        let script = ScriptBuf::new_p2tr(secp256k1::SECP256K1, untweaked_pk, None);
-        Ok(script)
-    }
+        let mut win_conditions_to_sign = BTreeSet::<WinCondition>::new();
 
-    pub fn spend_info_outcome(&self, outcome_index: usize) -> Result<OutcomeSpendInfo, Error> {
-        let payout_map = self.outcome_payouts.get(outcome_index).ok_or(Error)?;
-        let winners = payout_map.keys().copied();
-        OutcomeSpendInfo::new(
-            winners,
-            &self.market_maker,
-            self.relative_locktime_block_delta,
-        )
-    }
+        // Short circuit if this pubkey is not known.
+        if controlling_players.is_empty() && !is_market_maker {
+            return win_conditions_to_sign;
+        }
 
-    pub fn spend_info_split(&self, player: Player) -> Result<SplitSpendInfo, Error> {
-        SplitSpendInfo::new(
-            player,
-            &self.market_maker,
-            self.relative_locktime_block_delta,
-        )
+        for (outcome_index, payout_map) in self.outcome_payouts.iter().enumerate() {
+            // We want to sign the split TX for any win-conditions whose player is controlled
+            // by `seckey`. If we're the market maker, we sign every win condition.
+            win_conditions_to_sign.extend(
+                payout_map
+                    .keys()
+                    .filter(|winner| is_market_maker || controlling_players.contains(winner))
+                    .map(|&winner| WinCondition {
+                        winner,
+                        outcome_index,
+                    }),
+            );
+        }
+
+        win_conditions_to_sign
     }
 
     /// Convert the contract params into a funded contract, which identifies the specific
@@ -568,120 +661,6 @@ impl ContractParameters {
         }
     }
 
-    /// Construct an input to spend a given player's output of the split transaction
-    /// for a specific outcome. Also returns the value of that prevout.
-    fn split_tx_prevout(
-        &self,
-        outcome_index: usize,
-        winner: &Player,
-        split_tx: &Transaction,
-        block_delay: u16,
-    ) -> Result<(TxIn, Amount), Error> {
-        let payout_map = self.outcome_payouts.get(outcome_index).ok_or(Error)?;
-        let split_tx_output_index = payout_map.keys().position(|p| p == winner).ok_or(Error)?;
-
-        let input = TxIn {
-            previous_output: OutPoint {
-                txid: split_tx.txid(),
-                vout: split_tx_output_index as u32,
-            },
-            sequence: Sequence::from_height(block_delay),
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
-        };
-
-        let output_value = split_tx
-            .output
-            .get(split_tx_output_index)
-            .ok_or(Error)?
-            .value;
-
-        Ok((input, output_value))
-    }
-
-    /// Constructs a _win transaction_ which spends a particular player's payout from the split
-    /// transaction to a chosen `dest_script_pubkey`, effectively sweeping the winnings.
-    ///
-    /// If the player is a winning ticketholder, they MUST create, sign, and broadcast this
-    /// win transaction _before_ the market maker can use the reclaim TX to claw back the winnings.
-    /// They must wait for one round of block delay after the split transaction confirms.
-    pub fn tx_outcome_split_win(
-        &self,
-        outcome_index: usize,
-        winner: &Player,
-        split_tx: &Transaction,
-        dest_script_pubkey: ScriptBuf,
-        fee_rate: FeeRate,
-    ) -> Result<Transaction, Error> {
-        let (split_input, split_output_value) = self.split_tx_prevout(
-            outcome_index,
-            winner,
-            split_tx,
-            self.relative_locktime_block_delta,
-        )?;
-
-        let split_spend_info = self.spend_info_split(*winner)?;
-
-        let input_weight = split_spend_info.input_weight_for_win_tx();
-        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
-        let output_value =
-            fee_subtract_safe(split_output_value, fee, dest_script_pubkey.dust_value())?;
-
-        let win_output = TxOut {
-            value: output_value,
-            script_pubkey: dest_script_pubkey,
-        };
-
-        let win_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![split_input],
-            output: vec![win_output],
-        };
-        Ok(win_tx)
-    }
-
-    /// Constructs a _reclaim transaction_ which allows the market maker to reclaim capital
-    /// if the winner did not buy their ticket preimage.
-    ///
-    /// This TX can be signed and broadcast unilaterally by the market maker after two rounds
-    /// of relative block delay on the split transaction.
-    pub fn tx_outcome_split_reclaim(
-        &self,
-        outcome_index: usize,
-        winner: &Player,
-        split_tx: &Transaction,
-        dest_script_pubkey: ScriptBuf,
-        fee_rate: FeeRate,
-    ) -> Result<Transaction, Error> {
-        let (split_input, split_output_value) = self.split_tx_prevout(
-            outcome_index,
-            winner,
-            split_tx,
-            2 * self.relative_locktime_block_delta,
-        )?;
-
-        let split_spend_info = self.spend_info_split(*winner)?;
-
-        let input_weight = split_spend_info.input_weight_for_reclaim_tx();
-        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
-        let output_value =
-            fee_subtract_safe(split_output_value, fee, dest_script_pubkey.dust_value())?;
-
-        let reclaim_output = TxOut {
-            value: output_value,
-            script_pubkey: dest_script_pubkey,
-        };
-
-        let reclaim_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![split_input],
-            output: vec![reclaim_output],
-        };
-        Ok(reclaim_tx)
-    }
-
     /// TODO
     pub fn tx_expire(&self) -> Result<Transaction, Error> {
         todo!();
@@ -696,12 +675,18 @@ pub struct ContractWithFunding {
 }
 
 impl ContractWithFunding {
-    pub fn spend_info_funding<'s>(&'s self) -> Result<FundingSpendInfo<'s>, Error> {
-        Ok(FundingSpendInfo::new(
-            self.params.key_agg_ctx_all()?,
-            &self.params.event,
-            self.funding_value,
-        ))
+    pub fn spend_info_outcome(&self, outcome_index: usize) -> Result<OutcomeSpendInfo, Error> {
+        let payout_map = self
+            .params
+            .outcome_payouts
+            .get(outcome_index)
+            .ok_or(Error)?;
+        let winners = payout_map.keys().copied();
+        OutcomeSpendInfo::new(
+            winners,
+            &self.params.market_maker,
+            self.params.relative_locktime_block_delta,
+        )
     }
 
     /// Construct an outcome transaction for the given outcome index. This TX spends the
@@ -711,15 +696,11 @@ impl ContractWithFunding {
         let funding_input = TxIn {
             previous_output: self.funding_outpoint.clone(),
             sequence: Sequence::MAX,
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
+            ..TxIn::default()
         };
 
         // TODO cache OutcomeSpendInfo
-        let outcome_spk = self
-            .params
-            .spend_info_outcome(outcome_index)?
-            .script_pubkey();
+        let outcome_spk = self.spend_info_outcome(outcome_index)?.script_pubkey();
 
         let input_weights = [bitcoin::transaction::InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
         let fee = fee_calc_safe(self.params.fee_rate, input_weights, [outcome_spk.len()])?;
@@ -769,6 +750,14 @@ impl ContractWithOutcomes {
         &self.outcome_transactions
     }
 
+    pub fn spend_info_split(&self, player: Player) -> Result<SplitSpendInfo, Error> {
+        SplitSpendInfo::new(
+            player,
+            &self.funding.params.market_maker,
+            self.funding.params.relative_locktime_block_delta,
+        )
+    }
+
     pub fn sign_all_outcomes<'a>(
         &self,
         seckey: impl Into<Scalar>,
@@ -777,7 +766,7 @@ impl ContractWithOutcomes {
     ) -> Result<Vec<PartialSignature>, Error> {
         // Confirm the key is a part of the group.
         let seckey = seckey.into();
-        let funding_spend_info = self.funding.spend_info_funding()?;
+        let funding_spend_info = self.funding.params.spend_info_funding()?;
         funding_spend_info
             .key_agg_ctx()
             .pubkey_index(seckey.base_point_mul())
@@ -790,8 +779,8 @@ impl ContractWithOutcomes {
         let mut secnonce_iter = secnonces.into_iter();
 
         for (outcome_index, outcome_tx) in self.outcome_txs().into_iter().enumerate() {
-            let aggnonce = aggnonce_iter.next().ok_or(Error)?; // not enough aggnonces
-            let secnonce = secnonce_iter.next().ok_or(Error)?; // not enough secnonces
+            let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
+            let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
 
             // All outcome TX signatures should be locked by the oracle's outcome point.
             let outcome_lock_point = self
@@ -829,22 +818,22 @@ impl ContractWithOutcomes {
     pub fn tx_outcome_reclaim(
         &self,
         outcome_index: usize,
-        outcome_tx: &Transaction,
         dest_script_pubkey: ScriptBuf,
         fee_rate: FeeRate,
     ) -> Result<Transaction, Error> {
+        let outcome_tx = self.outcome_transactions.get(outcome_index).ok_or(Error)?;
+
         let outcome_input = TxIn {
             previous_output: OutPoint {
                 txid: outcome_tx.txid(),
                 vout: 0,
             },
             sequence: Sequence::from_height(2 * self.funding.params.relative_locktime_block_delta),
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
+            ..TxIn::default()
         };
 
         // TODO cache OutcomeSpendInfo
-        let outcome_spend_info = self.funding.params.spend_info_outcome(outcome_index)?;
+        let outcome_spend_info = self.funding.spend_info_outcome(outcome_index)?;
         let outcome_tx_value = outcome_tx.output.get(0).ok_or(Error)?.value;
 
         let input_weight = outcome_spend_info.input_weight_for_reclaim_tx();
@@ -878,12 +867,11 @@ impl ContractWithOutcomes {
                 vout: 0,
             },
             sequence: Sequence::from_height(self.funding.params.relative_locktime_block_delta),
-            script_sig: ScriptBuf::new(),
-            witness: Witness::new(),
+            ..TxIn::default()
         };
 
         // TODO cache OutcomeSpendInfo
-        let outcome_spend_info = self.funding.params.spend_info_outcome(outcome_index)?;
+        let outcome_spend_info = self.funding.spend_info_outcome(outcome_index)?;
         let outcome_tx_value = outcome_tx.output.get(0).ok_or(Error)?.value;
 
         let payout_map = self
@@ -905,11 +893,7 @@ impl ContractWithOutcomes {
         // payout_map is a btree, so outputs are automatically sorted by player.
         let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
         for (&player, &payout_weight) in payout_map.iter() {
-            let script_pubkey = self
-                .funding
-                .params
-                .spend_info_split(player)?
-                .script_pubkey();
+            let script_pubkey = self.spend_info_split(player)?.script_pubkey();
 
             // Payout amounts are computed by using relative weights.
             let payout = outcome_tx_value * payout_weight / total_payout_weight;
@@ -966,12 +950,225 @@ impl ContractWithSplits {
         &self.split_transactions
     }
 
-    /// Sign every split transaction needed. Players only need to sign
-    /// split transactions for outcomes in which they are paid out
-    /// by the DLC.
-    pub fn sign_all_splits(&self) -> Result<BTreeMap<WinCondition, PartialSignature>, Error> {
-        // TODO
-        todo!();
+    /// Sign all split script spend paths for every split transaction needed.
+    ///
+    /// Players only need to sign split transactions for outcomes in which
+    /// they are paid out by the DLC. Outcomes in which a player knows they
+    /// will not win any money are irrelevant to that player.
+    ///
+    /// The market maker must sign every split script spending path of every
+    /// split transaction.
+    pub fn sign_all_splits<'a>(
+        &self,
+        seckey: impl Into<Scalar>,
+        secnonces: impl IntoIterator<Item = SecNonce>,
+        aggnonces: impl IntoIterator<Item = &'a AggNonce>,
+    ) -> Result<BTreeMap<WinCondition, PartialSignature>, Error> {
+        let seckey = seckey.into();
+        let pubkey = seckey.base_point_mul();
+
+        let win_conditions_to_sign = self
+            .outcomes
+            .funding
+            .params
+            .controlling_win_conditions(pubkey);
+
+        let mut aggnonce_iter = aggnonces.into_iter();
+        let mut secnonce_iter = secnonces.into_iter();
+
+        let mut partial_signatures = BTreeMap::<WinCondition, PartialSignature>::new();
+
+        for win_cond in win_conditions_to_sign {
+            let split_tx = self.split_txs().get(win_cond.outcome_index).ok_or(Error)?;
+            let outcome_tx = self
+                .outcomes
+                .outcome_txs()
+                .get(win_cond.outcome_index)
+                .ok_or(Error)?;
+
+            // TODO cache this value, it should be the same for all outcome TXs.
+            let outcome_value = outcome_tx.output.get(0).ok_or(Error)?.value;
+
+            let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
+            let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
+
+            // Hash the split TX.
+            let outcome_spend_info = self
+                .outcomes
+                .funding
+                .spend_info_outcome(win_cond.outcome_index)?;
+            let sighash =
+                outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner, outcome_value)?;
+
+            // Partially sign the sighash.
+            // We must use the untweaked musig key to sign the split script spend,
+            // because that's the key we pushed to the script.
+            let partial_sig = musig2::sign_partial(
+                &outcome_spend_info.untweaked_ctx,
+                seckey,
+                secnonce,
+                aggnonce,
+                sighash,
+            )?;
+
+            partial_signatures.insert(win_cond, partial_sig);
+        }
+
+        Ok(partial_signatures)
+    }
+
+    /// Construct an input to spend a given player's output of the split transaction
+    /// for a specific outcome. Also returns the value of that prevout.
+    fn split_tx_prevout(
+        &self,
+        outcome_index: usize,
+        winner: &Player,
+        block_delay: u16,
+    ) -> Result<(TxIn, Amount), Error> {
+        let split_tx = self.split_txs().get(outcome_index).ok_or(Error)?;
+
+        let payout_map = self
+            .outcomes
+            .funding
+            .params
+            .outcome_payouts
+            .get(outcome_index)
+            .ok_or(Error)?;
+
+        let split_tx_output_index = payout_map.keys().position(|p| p == winner).ok_or(Error)?;
+
+        let input = TxIn {
+            previous_output: OutPoint {
+                txid: split_tx.txid(),
+                vout: split_tx_output_index as u32,
+            },
+            sequence: Sequence::from_height(block_delay),
+            ..TxIn::default()
+        };
+
+        let output_value = split_tx
+            .output
+            .get(split_tx_output_index)
+            .ok_or(Error)?
+            .value;
+
+        Ok((input, output_value))
+    }
+
+    /// Constructs a _win transaction_ which spends a particular player's payout from the split
+    /// transaction to a chosen `dest_script_pubkey`, effectively sweeping the winnings.
+    ///
+    /// If the player is a winning ticketholder, they MUST create, sign, and broadcast this
+    /// win transaction _before_ the market maker can use the reclaim TX to claw back the winnings.
+    /// They must wait for one round of block delay after the split transaction confirms.
+    pub fn tx_outcome_split_win(
+        &self,
+        outcome_index: usize,
+        winner: Player,
+        dest_script_pubkey: ScriptBuf,
+        fee_rate: FeeRate,
+    ) -> Result<Transaction, Error> {
+        let (split_input, split_output_value) = self.split_tx_prevout(
+            outcome_index,
+            &winner,
+            self.outcomes.funding.params.relative_locktime_block_delta,
+        )?;
+
+        let split_spend_info = self.outcomes.spend_info_split(winner)?;
+
+        let input_weight = split_spend_info.input_weight_for_win_tx();
+        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
+        let output_value =
+            fee_subtract_safe(split_output_value, fee, dest_script_pubkey.dust_value())?;
+
+        let win_output = TxOut {
+            value: output_value,
+            script_pubkey: dest_script_pubkey,
+        };
+
+        let win_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![split_input],
+            output: vec![win_output],
+        };
+        Ok(win_tx)
+    }
+
+    /// Constructs a _reclaim transaction_ which allows the market maker to reclaim capital
+    /// if the winner did not buy their ticket preimage.
+    ///
+    /// This TX can be signed and broadcast unilaterally by the market maker after two rounds
+    /// of relative block delay on the split transaction.
+    pub fn tx_outcome_split_reclaim(
+        &self,
+        outcome_index: usize,
+        winner: Player,
+        dest_script_pubkey: ScriptBuf,
+        fee_rate: FeeRate,
+    ) -> Result<Transaction, Error> {
+        let (split_input, split_output_value) = self.split_tx_prevout(
+            outcome_index,
+            &winner,
+            2 * self.outcomes.funding.params.relative_locktime_block_delta,
+        )?;
+
+        let split_spend_info = self.outcomes.spend_info_split(winner)?;
+
+        let input_weight = split_spend_info.input_weight_for_reclaim_tx();
+        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
+        let output_value =
+            fee_subtract_safe(split_output_value, fee, dest_script_pubkey.dust_value())?;
+
+        let reclaim_output = TxOut {
+            value: output_value,
+            script_pubkey: dest_script_pubkey,
+        };
+
+        let reclaim_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![split_input],
+            output: vec![reclaim_output],
+        };
+        Ok(reclaim_tx)
+    }
+
+    /// Constructs a _sellback transaction_ which returns a ticketholding winner's payout
+    /// from the split transaction to the market maker. To unlock the necessary tapscript
+    /// spending path, the market maker must provide the preimage of the player's payout hash.
+    ///
+    /// If the market maker buys the payout preimage MUST create, sign, and broadcast this
+    /// win transaction _before_ the market maker can use the reclaim TX to claw back the winnings.
+    /// They must wait for one round of block delay after the split transaction confirms.
+    pub fn tx_outcome_split_sellback(
+        &self,
+        outcome_index: usize,
+        winner: Player,
+        dest_script_pubkey: ScriptBuf,
+        fee_rate: FeeRate,
+    ) -> Result<Transaction, Error> {
+        let (split_input, split_output_value) = self.split_tx_prevout(outcome_index, &winner, 0)?;
+
+        let split_spend_info = self.outcomes.spend_info_split(winner)?;
+
+        let input_weight = split_spend_info.input_weight_for_win_tx();
+        let fee = fee_calc_safe(fee_rate, [input_weight], [dest_script_pubkey.len()])?;
+        let output_value =
+            fee_subtract_safe(split_output_value, fee, dest_script_pubkey.dust_value())?;
+
+        let sellback_output = TxOut {
+            value: output_value,
+            script_pubkey: dest_script_pubkey,
+        };
+
+        let sellback_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![split_input],
+            output: vec![sellback_output],
+        };
+        Ok(sellback_tx)
     }
 }
 
@@ -1065,7 +1262,8 @@ mod tests {
         market_maker_key: Scalar,
         oracle_key: Scalar,
         oracle_nonce: Scalar,
-        preimages: Vec<TicketPreimage>,
+        ticket_preimages: Vec<Preimage>,
+        payout_preimages: Vec<Preimage>,
         player_keys: Vec<Scalar>,
         outcomes: Vec<TestOutcome>,
     }
@@ -1076,13 +1274,23 @@ mod tests {
                 market_maker_key: Scalar::try_from(45).unwrap(),
                 oracle_key: Scalar::try_from(938).unwrap(),
                 oracle_nonce: Scalar::try_from(284).unwrap(),
-                preimages: vec![
+                ticket_preimages: vec![
                     preimage_from_hex(
                         "bdb43c9d6a2eb2c850ff2961ec742a97880da219f145a87eafe5e77d98345157",
                     )
                     .unwrap(),
                     preimage_from_hex(
                         "550fef06e230286db2b930aa4494faf1b83bf9f5534f60c3948975a121ee221c",
+                    )
+                    .unwrap(),
+                ],
+                payout_preimages: vec![
+                    preimage_from_hex(
+                        "dc5fdaaa5b7043939f7e708be238272175b817f46cd2ca362790fabcdd6cbeb1",
+                    )
+                    .unwrap(),
+                    preimage_from_hex(
+                        "783b18d4eafcc622a541264d5c998e92258030fb324a0f864b33521a096f2436",
                     )
                     .unwrap(),
                 ],
@@ -1111,10 +1319,12 @@ mod tests {
             let players: Vec<Player> = self
                 .player_keys
                 .iter()
-                .zip(&self.preimages)
-                .map(|(&seckey, &preimage)| Player {
+                .zip(&self.ticket_preimages)
+                .zip(&self.payout_preimages)
+                .map(|((&seckey, &ticket_preimage), &payout_preimage)| Player {
                     pubkey: seckey.base_point_mul(),
-                    ticket_hash: sha256(&preimage),
+                    ticket_hash: sha256(&ticket_preimage),
+                    payout_hash: sha256(&payout_preimage),
                 })
                 .collect();
 
@@ -1153,6 +1363,7 @@ mod tests {
 
                 expiry_payout: None,
                 fee_rate: FeeRate::from_sat_per_vb_unchecked(100),
+                funding_value: Amount::from_sat(5_000_000),
                 relative_locktime_block_delta: 12 * 6, // approx 12 hours
             }
         }
@@ -1164,7 +1375,9 @@ mod tests {
         let mut contract = test_contract.contract_params();
 
         let funding_spk = contract
-            .multisig_spk_funding()
+            .spend_info_funding()
+            .expect("error computing funding spend info")
+            .script_pubkey()
             .expect("error computing funding SPK");
 
         // <1> <35e9f3104b67a8b473e8dc5582b94367ae9b557c72c831746db5929ae2938392>
@@ -1179,7 +1392,9 @@ mod tests {
             // Player order should not matter.
             (contract.players[0], contract.players[1]) = (contract.players[1], contract.players[0]);
             let funding_spk = contract
-                .multisig_spk_funding()
+                .spend_info_funding()
+                .expect("error computing funding spend info")
+                .script_pubkey()
                 .expect("error computing funding SPK");
             assert_eq!(funding_spk, expected_spk);
         }
@@ -1195,7 +1410,6 @@ mod tests {
                 .unwrap(),
             vout: 4,
         };
-        let funding_value = Amount::from_sat(5_000_000);
 
         let mut contract = test_contract
             .contract_params()
@@ -1217,7 +1431,7 @@ mod tests {
                 ..TxIn::default()
             }],
             output: vec![TxOut {
-                value: funding_value - Amount::from_sat(11_100),
+                value: contract.funding_value - Amount::from_sat(11_100),
                 script_pubkey: ScriptBuf::from_hex(
                     "51208871c31610f567c0a9e59198fbfa3ccb6f42113023050653e8d203e2dd86e437",
                 )
