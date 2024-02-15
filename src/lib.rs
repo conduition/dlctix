@@ -1,5 +1,7 @@
 mod errors;
+mod oracles;
 
+// external
 use bitcoin::{
     absolute::LockTime,
     key::constants::SCHNORR_SIGNATURE_SIZE,
@@ -11,16 +13,25 @@ use bitcoin::{
         TAPROOT_CONTROL_NODE_SIZE,
     },
     transaction::InputWeightPrediction,
-    Amount, FeeRate, OutPoint, Sequence, TapSighash, Transaction, TxIn, TxOut, Witness,
+    Amount, FeeRate, OutPoint, Sequence, TapSighash, Transaction, TxIn, TxOut,
 };
-use errors::Error;
 use musig2::{AggNonce, KeyAggContext, PartialSignature, SecNonce};
-use secp::{MaybePoint, MaybeScalar, Point, Scalar};
+use secp::{Point, Scalar};
 use sha2::Digest as _;
 
+// stdlib
 use std::collections::{BTreeMap, BTreeSet};
 
-const P2TR_SCRIPT_PUBKEY_LEN: usize = 34;
+// crate
+use errors::Error;
+use oracles::EventAnnouncment;
+
+/// The serialized length of a P2TR script pubkey.
+const P2TR_SCRIPT_PUBKEY_SIZE: usize = 34;
+
+/// This was computed using [`bitcoin`] v0.31.1.
+/// Test coverage ensures this stays is up-to-date.
+const P2TR_DUST_VALUE: Amount = Amount::from_sat(330);
 
 /// The agent who provides the on-chain capital to facilitate the ticketed DLC.
 /// Could be one of the players in the DLC, or could be a neutral 3rd party
@@ -36,15 +47,15 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 }
 
 /// The size for ticket preimages.
-///
-/// Using lower values is more efficient on-chain, but less secure against
-/// brute force attacks.
 pub const PREIMAGE_SIZE: usize = 32;
 
-/// A handy type-alias for ticket preimages. We use random 32 byte preimages
-/// for best compatibility with lightning network clients.
+/// A handy type-alias for ticket and payout preimages.
+///
+/// We use random 32 byte preimages for compatibility with
+/// lightning network clients.
 pub type Preimage = [u8; PREIMAGE_SIZE];
 
+/// Generate a random [`Preimage`] from a secure RNG.
 pub fn preimage_random<R: rand::RngCore + rand::CryptoRng>(rng: &mut R) -> Preimage {
     let mut preimage = [0u8; PREIMAGE_SIZE];
     rng.fill_bytes(&mut preimage);
@@ -81,64 +92,6 @@ pub struct Player {
     /// for which they know the preimage. By selling the preimage to the market maker,
     /// they allow the market maker to reclaim the on-chain funds.
     pub payout_hash: [u8; 32],
-}
-
-/// An oracle's announcement of a future event.
-#[derive(Debug, Clone)]
-pub struct EventAnnouncment {
-    /// The signing oracle's pubkey
-    pub oracle_pubkey: Point,
-
-    /// The `R` point with which the oracle promises to attest to this event.
-    pub nonce_point: Point,
-
-    /// Naive but easy.
-    pub outcome_messages: Vec<Vec<u8>>,
-
-    /// The unix timestamp beyond which the oracle is considered to have gone AWOL.
-    pub expiry: u32,
-}
-
-impl EventAnnouncment {
-    /// Computes the oracle's locking point for the given outcome index.
-    pub fn outcome_lock_point(&self, index: usize) -> Option<MaybePoint> {
-        let msg = &self.outcome_messages.get(index)?;
-
-        let e: MaybeScalar = musig2::compute_challenge_hash_tweak(
-            &self.nonce_point.serialize_xonly(),
-            &self.oracle_pubkey,
-            msg,
-        );
-
-        // S = R + eD
-        Some(self.nonce_point + e * self.oracle_pubkey)
-    }
-
-    /// Computes the oracle's unllocking scalar - the discrete log of the
-    /// locking point - for the given outcome index.
-    pub fn outcome_secret(
-        &self,
-        index: usize,
-        oracle_seckey: impl Into<Scalar>,
-        nonce: impl Into<Scalar>,
-    ) -> Option<MaybeScalar> {
-        let oracle_seckey = oracle_seckey.into();
-        let nonce = nonce.into();
-
-        if oracle_seckey.base_point_mul() != self.oracle_pubkey
-            || nonce.base_point_mul() != self.nonce_point
-        {
-            return None;
-        }
-
-        let msg = &self.outcome_messages.get(index)?;
-        let e: MaybeScalar = musig2::compute_challenge_hash_tweak(
-            &self.nonce_point.serialize_xonly(),
-            &self.oracle_pubkey,
-            msg,
-        );
-        Some(nonce + e * oracle_seckey)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +173,7 @@ impl FundingSpendInfo {
 pub struct OutcomeSpendInfo {
     untweaked_ctx: KeyAggContext,
     tweaked_ctx: KeyAggContext,
+    outcome_value: Amount,
     spend_info: TaprootSpendInfo,
     winner_split_scripts: BTreeMap<Player, ScriptBuf>,
     reclaim_script: ScriptBuf,
@@ -229,6 +183,7 @@ impl OutcomeSpendInfo {
     fn new<W: IntoIterator<Item = Player>>(
         winners: W,
         market_maker: &MarketMaker,
+        outcome_value: Amount,
         block_delta: u16,
     ) -> Result<Self, Error> {
         let winners: Vec<Player> = winners.into_iter().collect();
@@ -297,6 +252,7 @@ impl OutcomeSpendInfo {
         let outcome_spend_info = OutcomeSpendInfo {
             untweaked_ctx,
             tweaked_ctx,
+            outcome_value,
             spend_info: tr_spend_info,
             winner_split_scripts,
             reclaim_script,
@@ -370,14 +326,31 @@ impl OutcomeSpendInfo {
         &self,
         split_tx: &Transaction,
         winner: &Player,
-        outcome_value: Amount,
     ) -> Result<TapSighash, Error> {
         let outcome_prevouts = [TxOut {
             script_pubkey: self.script_pubkey(),
-            value: outcome_value,
+            value: self.outcome_value,
         }];
         let split_script = self.winner_split_scripts.get(winner).ok_or(Error)?;
         let leaf_hash = TapLeafHash::from_script(split_script, LeafVersion::TapScript);
+
+        let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
+            0,
+            &Prevouts::All(&outcome_prevouts),
+            leaf_hash,
+            TapSighashType::Default,
+        )?;
+        Ok(sighash)
+    }
+
+    /// Compute the signature hash for a given split transaction.
+    pub fn sighash_tx_reclaim(&self, split_tx: &Transaction) -> Result<TapSighash, Error> {
+        let outcome_prevouts = [TxOut {
+            script_pubkey: self.script_pubkey(),
+            value: self.outcome_value,
+        }];
+
+        let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
             0,
@@ -649,15 +622,10 @@ impl ContractParameters {
 
     /// Convert the contract params into a funded contract, which identifies the specific
     /// funding TX output from which all other transactions in the contract will be derived.
-    pub fn with_funding(
-        self,
-        funding_outpoint: OutPoint,
-        funding_value: Amount,
-    ) -> ContractWithFunding {
+    pub fn with_funding(self, funding_outpoint: OutPoint) -> ContractWithFunding {
         ContractWithFunding {
             params: self,
             funding_outpoint,
-            funding_value,
         }
     }
 
@@ -671,7 +639,6 @@ impl ContractParameters {
 pub struct ContractWithFunding {
     params: ContractParameters,
     funding_outpoint: OutPoint,
-    funding_value: Amount,
 }
 
 impl ContractWithFunding {
@@ -685,8 +652,20 @@ impl ContractWithFunding {
         OutcomeSpendInfo::new(
             winners,
             &self.params.market_maker,
+            self.outcome_value()?,
             self.params.relative_locktime_block_delta,
         )
+    }
+
+    fn outcome_value(&self) -> Result<Amount, Error> {
+        let input_weights = [bitcoin::transaction::InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
+        let fee = fee_calc_safe(
+            self.params.fee_rate,
+            input_weights,
+            [P2TR_SCRIPT_PUBKEY_SIZE],
+        )?;
+        let outcome_value = fee_subtract_safe(self.params.funding_value, fee, P2TR_DUST_VALUE)?;
+        Ok(outcome_value)
     }
 
     /// Construct an outcome transaction for the given outcome index. This TX spends the
@@ -702,12 +681,8 @@ impl ContractWithFunding {
         // TODO cache OutcomeSpendInfo
         let outcome_spk = self.spend_info_outcome(outcome_index)?.script_pubkey();
 
-        let input_weights = [bitcoin::transaction::InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
-        let fee = fee_calc_safe(self.params.fee_rate, input_weights, [outcome_spk.len()])?;
-        let output_value = fee_subtract_safe(self.funding_value, fee, outcome_spk.dust_value())?;
-
         let outcome_output = TxOut {
-            value: output_value,
+            value: self.outcome_value()?,
             script_pubkey: outcome_spk,
         };
 
@@ -723,9 +698,32 @@ impl ContractWithFunding {
     /// Produce a [`ContractWithOutcomes`] by constructing a set of unsigned
     /// outcome transactions which spend from the funding TX.
     pub fn with_outcomes(self) -> Result<ContractWithOutcomes, Error> {
+        let funding_input = TxIn {
+            previous_output: self.funding_outpoint.clone(),
+            sequence: Sequence::MAX,
+            ..TxIn::default()
+        };
+        let outcome_value = self.outcome_value()?;
+
         let n_outcomes = self.params.event.outcome_messages.len();
-        let outcome_transactions = (0..n_outcomes)
-            .map(|outcome_index| self.tx_outcome(outcome_index))
+        let outcome_transactions: Vec<Transaction> = (0..n_outcomes)
+            .map(|outcome_index| {
+                // TODO cache OutcomeSpendInfo
+                let outcome_spk = self.spend_info_outcome(outcome_index)?.script_pubkey();
+
+                let outcome_output = TxOut {
+                    value: outcome_value,
+                    script_pubkey: outcome_spk,
+                };
+
+                let outcome_tx = Transaction {
+                    version: bitcoin::transaction::Version::TWO,
+                    lock_time: LockTime::ZERO,
+                    input: vec![funding_input.clone()],
+                    output: vec![outcome_output],
+                };
+                Ok(outcome_tx)
+            })
             .collect::<Result<_, Error>>()?;
 
         let contract = ContractWithOutcomes {
@@ -883,7 +881,7 @@ impl ContractWithOutcomes {
 
         // Fee estimation
         let input_weight = outcome_spend_info.input_weight_for_split_tx();
-        let spk_lengths = std::iter::repeat(P2TR_SCRIPT_PUBKEY_LEN).take(payout_map.len());
+        let spk_lengths = std::iter::repeat(P2TR_SCRIPT_PUBKEY_SIZE).take(payout_map.len());
         let fee_total = fee_calc_safe(self.funding.params.fee_rate, [input_weight], spk_lengths)?;
 
         // Mining fees are distributed equally among all winners, regardless of payout weight.
@@ -980,14 +978,6 @@ impl ContractWithSplits {
 
         for win_cond in win_conditions_to_sign {
             let split_tx = self.split_txs().get(win_cond.outcome_index).ok_or(Error)?;
-            let outcome_tx = self
-                .outcomes
-                .outcome_txs()
-                .get(win_cond.outcome_index)
-                .ok_or(Error)?;
-
-            // TODO cache this value, it should be the same for all outcome TXs.
-            let outcome_value = outcome_tx.output.get(0).ok_or(Error)?.value;
 
             let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
             let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
@@ -997,8 +987,7 @@ impl ContractWithSplits {
                 .outcomes
                 .funding
                 .spend_info_outcome(win_cond.outcome_index)?;
-            let sighash =
-                outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner, outcome_value)?;
+            let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
 
             // Partially sign the sighash.
             // We must use the untweaked musig key to sign the split script spend,
@@ -1095,8 +1084,8 @@ impl ContractWithSplits {
         Ok(win_tx)
     }
 
-    /// Constructs a _reclaim transaction_ which allows the market maker to reclaim capital
-    /// if the winner did not buy their ticket preimage.
+    /// Constructs a _reclaim transaction_ which allows the market maker to reclaim one
+    /// output of the split transaction if the winner did not buy their ticket preimage.
     ///
     /// This TX can be signed and broadcast unilaterally by the market maker after two rounds
     /// of relative block delay on the split transaction.
@@ -1205,6 +1194,15 @@ fn fee_subtract_safe(
 mod tests {
     use super::*;
     use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, SecNonce};
+    use secp::MaybePoint;
+
+    #[test]
+    fn test_p2tr_dust() {
+        let xonly = bitcoin::XOnlyPublicKey::from_slice(&[1; 32]).unwrap();
+        let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly);
+        let script = ScriptBuf::new_p2tr_tweaked(tweaked);
+        assert_eq!(script.dust_value(), P2TR_DUST_VALUE);
+    }
 
     /// Test-helper to cooperatively sign a message with musig2.
     fn musig2_group_sign_adaptor(
@@ -1377,8 +1375,7 @@ mod tests {
         let funding_spk = contract
             .spend_info_funding()
             .expect("error computing funding spend info")
-            .script_pubkey()
-            .expect("error computing funding SPK");
+            .script_pubkey();
 
         // <1> <35e9f3104b67a8b473e8dc5582b94367ae9b557c72c831746db5929ae2938392>
         let expected_spk = ScriptBuf::from_hex(
@@ -1394,8 +1391,7 @@ mod tests {
             let funding_spk = contract
                 .spend_info_funding()
                 .expect("error computing funding spend info")
-                .script_pubkey()
-                .expect("error computing funding SPK");
+                .script_pubkey();
             assert_eq!(funding_spk, expected_spk);
         }
     }
@@ -1413,7 +1409,7 @@ mod tests {
 
         let mut contract = test_contract
             .contract_params()
-            .with_funding(funding_outpoint, funding_value);
+            .with_funding(funding_outpoint);
 
         // Player 1 wins
         let outcome_index = 0;
@@ -1431,7 +1427,7 @@ mod tests {
                 ..TxIn::default()
             }],
             output: vec![TxOut {
-                value: contract.funding_value - Amount::from_sat(11_100),
+                value: contract.params.funding_value - Amount::from_sat(11_100),
                 script_pubkey: ScriptBuf::from_hex(
                     "51208871c31610f567c0a9e59198fbfa3ccb6f42113023050653e8d203e2dd86e437",
                 )
@@ -1451,7 +1447,7 @@ mod tests {
             assert_eq!(outcome_tx, expected_tx);
         }
 
-        let funding_spend_info = contract.spend_info_funding().unwrap();
+        let funding_spend_info = contract.params.spend_info_funding().unwrap();
 
         // Hashing the outcome TX.
         let sighash = funding_spend_info
