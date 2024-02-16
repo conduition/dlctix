@@ -22,6 +22,12 @@ impl From<musig2::errors::TweakError> for Error {
     }
 }
 
+impl From<musig2::errors::VerifyError> for Error {
+    fn from(_: musig2::errors::VerifyError) -> Self {
+        Error
+    }
+}
+
 impl From<musig2::errors::SigningError> for Error {
     fn from(_: musig2::errors::SigningError) -> Self {
         Error
