@@ -238,11 +238,13 @@ where
 }
 
 /// Construct an input to spend an outcome transaction for a specific outcome.
-pub(crate) fn outcome_tx_prevout(
-    outcome_build_out: &OutcomeTransactionBuildOutput,
+/// Also returns a reference to the outcome TX's output so it can be used
+/// to construct a set of [`bitcoin::sighash::Prevouts`].
+pub(crate) fn outcome_tx_prevout<'x>(
+    outcome_build_out: &'x OutcomeTransactionBuildOutput,
     outcome_index: usize,
     block_delay: u16,
-) -> Result<TxIn, Error> {
+) -> Result<(TxIn, &'x TxOut), Error> {
     let outcome_tx = outcome_build_out
         .outcome_txs()
         .get(outcome_index)
@@ -257,5 +259,7 @@ pub(crate) fn outcome_tx_prevout(
         ..TxIn::default()
     };
 
-    Ok(outcome_input)
+    let prevout = outcome_tx.output.get(outcome_index).ok_or(Error)?;
+
+    Ok((outcome_input, prevout))
 }

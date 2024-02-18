@@ -56,7 +56,7 @@ pub(crate) fn build_split_txs(
         let fee_shared = fee_total / payout_map.len() as u64;
         let total_payout_weight: u64 = payout_map.values().copied().sum();
 
-        let outcome_input = contract::outcome::outcome_tx_prevout(
+        let (outcome_input, _) = contract::outcome::outcome_tx_prevout(
             outcome_build_output,
             outcome_index,
             params.relative_locktime_block_delta, // Split TXs have 1*delta block delay
@@ -271,14 +271,15 @@ where
 }
 
 /// Construct an input to spend a given player's output of the split transaction
-/// for a specific outcome. Also returns the value of that prevout.
-pub(crate) fn split_tx_prevout(
+/// for a specific outcome. Also returns a reference to the split TX's output so
+/// it can be used to construct a set of [`bitcoin::sighash::Prevouts`].
+pub(crate) fn split_tx_prevout<'x>(
     params: &ContractParameters,
-    split_build_out: &SplitTransactionBuildOutput,
+    split_build_out: &'x SplitTransactionBuildOutput,
     outcome_index: usize,
     winner: &Player,
     block_delay: u16,
-) -> Result<(TxIn, Amount), Error> {
+) -> Result<(TxIn, &'x TxOut), Error> {
     let split_tx = split_build_out
         .split_txs()
         .get(outcome_index)
@@ -296,11 +297,7 @@ pub(crate) fn split_tx_prevout(
         ..TxIn::default()
     };
 
-    let output_value = split_tx
-        .output
-        .get(split_tx_output_index)
-        .ok_or(Error)?
-        .value;
+    let prevout = split_tx.output.get(split_tx_output_index).ok_or(Error)?;
 
-    Ok((input, output_value))
+    Ok((input, prevout))
 }
