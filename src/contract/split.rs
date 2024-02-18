@@ -1,4 +1,4 @@
-use bitcoin::{absolute::LockTime, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut};
+use bitcoin::{absolute::LockTime, OutPoint, Sequence, Transaction, TxIn, TxOut};
 use musig2::{AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::Scalar;
 

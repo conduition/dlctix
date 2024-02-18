@@ -6,10 +6,10 @@ use bitcoin::{
         LeafVersion, TaprootSpendInfo, TAPROOT_CONTROL_BASE_SIZE, TAPROOT_CONTROL_NODE_SIZE,
     },
     transaction::InputWeightPrediction,
-    Amount, ScriptBuf, TapLeafHash, TapSighash, TapSighashType, Transaction, TxOut,
+    Amount, ScriptBuf, TapLeafHash, TapSighash, TapSighashType, Transaction, TxOut, Witness,
 };
-use musig2::KeyAggContext;
-use secp::Point;
+use musig2::{CompactSignature, KeyAggContext};
+use secp::{Point, Scalar};
 
 use crate::{
     errors::Error,
@@ -17,7 +17,7 @@ use crate::{
     parties::{MarketMaker, Player},
 };
 
-use std::collections::BTreeMap;
+use std::{borrow::Borrow, collections::BTreeMap};
 
 /// Represents a taproot contract which encodes spending conditions for
 /// the given outcome index's outcome TX. This tree is meant to encumber joint
@@ -221,21 +221,43 @@ impl OutcomeSpendInfo {
         Ok(sighash)
     }
 
-    /// Compute the signature hash for a given split transaction.
-    pub(crate) fn sighash_tx_reclaim(&self, split_tx: &Transaction) -> Result<TapSighash, Error> {
-        let outcome_prevouts = [TxOut {
-            script_pubkey: self.script_pubkey(),
-            value: self.outcome_value,
-        }];
-
+    /// Compute a witness for a reclaim transaction which spends from the outcome transaction.
+    ///
+    /// This would only be used if none of the attested DLC outcome winners actually paid for
+    /// their ticket preimage. It allows the market maker to sweep their on-chain money back
+    /// without splitting it into multiple payout contracts and recombining the outputs unnecessarily.
+    pub(crate) fn witness_tx_reclaim<T: Borrow<TxOut>>(
+        &self,
+        split_tx: &Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: Scalar,
+        nonce_seed: impl Into<musig2::NonceSeed>,
+    ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
-            0,
-            &Prevouts::All(&outcome_prevouts),
+            input_index,
+            prevouts,
             leaf_hash,
             TapSighashType::Default,
         )?;
-        Ok(sighash)
+
+        let signature: CompactSignature =
+            musig2::sign_solo(market_maker_secret_key, sighash, nonce_seed);
+
+        let reclaim_control_block = self
+            .spend_info
+            .control_block(&(self.reclaim_script.clone(), LeafVersion::TapScript))
+            .expect("reclaim script cannot be missing");
+
+        // The witness stack for a reclaim TX which spends an outcome TX is:
+        // <mm_sig> <script> <ctrl_block>
+        let mut witness = Witness::new();
+        witness.push(signature.serialize());
+        witness.push(&self.reclaim_script);
+        witness.push(reclaim_control_block.serialize());
+
+        Ok(witness)
     }
 }

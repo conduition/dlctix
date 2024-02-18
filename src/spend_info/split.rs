@@ -4,16 +4,16 @@ use bitcoin::{
     sighash::{Prevouts, SighashCache},
     taproot::{LeafVersion, TapLeafHash, TaprootSpendInfo},
     transaction::InputWeightPrediction,
-    Amount, ScriptBuf, TapSighash, TapSighashType, Transaction, TxOut,
+    Amount, ScriptBuf, TapSighashType, Transaction, TxOut, Witness,
 };
-use musig2::KeyAggContext;
-use secp::Point;
+use musig2::{CompactSignature, KeyAggContext};
+use secp::{Point, Scalar};
 
 use std::borrow::Borrow;
 
 use crate::{
     errors::Error,
-    hashlock::PREIMAGE_SIZE,
+    hashlock::{Preimage, PREIMAGE_SIZE},
     parties::{MarketMaker, Player},
 };
 
@@ -54,7 +54,7 @@ impl SplitSpendInfo {
         // The win script, used by a ticketholding winner to claim their
         // payout on-chain if the market maker doesn't cooperate.
         //
-        // Inputs: <player_sig> <preimage>
+        // Inputs: <player_sig> <ticket_preimage>
         let win_script = bitcoin::script::Builder::new()
             // Check relative locktime: <delta> OP_CSV OP_DROP
             .push_int(block_delta as i64)
@@ -156,7 +156,7 @@ impl SplitSpendInfo {
             .expect("win script cannot be missing");
 
         // The witness stack for the win TX which spends a split TX output is:
-        // <player_sig> <preimage> <script> <ctrl_block>
+        // <player_sig> <ticket_preimage> <script> <ctrl_block>
         InputWeightPrediction::new(
             0,
             [
@@ -178,7 +178,7 @@ impl SplitSpendInfo {
             .expect("reclaim script cannot be missing");
 
         // The witness stack for the reclaim TX which spends a split TX output is:
-        // <player_sig> <script> <ctrl_block>
+        // <mm_sig> <script> <ctrl_block>
         InputWeightPrediction::new(
             0,
             [
@@ -211,14 +211,17 @@ impl SplitSpendInfo {
         )
     }
 
-    /// Derive the signature hash for a win transaction, which spends from
+    /// Derive the witness for a win transaction input which spends from
     /// a split transaction.
-    pub(crate) fn sighash_tx_win<T: Borrow<TxOut>>(
+    pub(crate) fn witness_tx_win<T: Borrow<TxOut>>(
         &self,
         win_tx: &Transaction,
         input_index: usize,
         prevouts: &Prevouts<T>,
-    ) -> Result<TapSighash, Error> {
+        ticket_preimage: Preimage,
+        player_secret_key: Scalar,
+        nonce_seed: impl Into<musig2::NonceSeed>,
+    ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.win_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(win_tx).taproot_script_spend_signature_hash(
@@ -227,17 +230,35 @@ impl SplitSpendInfo {
             leaf_hash,
             TapSighashType::Default,
         )?;
-        Ok(sighash)
+
+        let signature: CompactSignature = musig2::sign_solo(player_secret_key, sighash, nonce_seed);
+
+        let win_control_block = self
+            .spend_info
+            .control_block(&(self.win_script.clone(), LeafVersion::TapScript))
+            .expect("win script cannot be missing");
+
+        // The witness stack for a win TX which spends a split TX output is:
+        // <player_sig> <ticket_preimage> <script> <ctrl_block>
+        let mut witness = Witness::new();
+        witness.push(signature.serialize());
+        witness.push(ticket_preimage);
+        witness.push(&self.win_script);
+        witness.push(win_control_block.serialize());
+
+        Ok(witness)
     }
 
-    /// Derive the signature hash for a reclaim transaction, which spends from
+    /// Derive the witness for a reclaim transaction, which spends from
     /// a split transaction.
-    pub(crate) fn sighash_tx_reclaim<T: Borrow<TxOut>>(
+    pub(crate) fn witness_tx_reclaim<T: Borrow<TxOut>>(
         &self,
         reclaim_tx: &Transaction,
         input_index: usize,
         prevouts: &Prevouts<T>,
-    ) -> Result<TapSighash, Error> {
+        market_maker_secret_key: Scalar,
+        nonce_seed: impl Into<musig2::NonceSeed>,
+    ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(reclaim_tx).taproot_script_spend_signature_hash(
@@ -246,17 +267,35 @@ impl SplitSpendInfo {
             leaf_hash,
             TapSighashType::Default,
         )?;
-        Ok(sighash)
+        let signature: CompactSignature =
+            musig2::sign_solo(market_maker_secret_key, sighash, nonce_seed);
+
+        let reclaim_control_block = self
+            .spend_info
+            .control_block(&(self.reclaim_script.clone(), LeafVersion::TapScript))
+            .expect("reclaim script cannot be missing");
+
+        // The witness stack for a reclaim TX which spends a split TX output is:
+        // <mm_sig> <script> <ctrl_block>
+        let mut witness = Witness::new();
+        witness.push(signature.serialize());
+        witness.push(&self.reclaim_script);
+        witness.push(reclaim_control_block.serialize());
+
+        Ok(witness)
     }
 
     /// Derive the signature hash for a sellback transaction, which spends from
     /// a split transaction.
-    pub(crate) fn sighash_tx_sellback<T: Borrow<TxOut>>(
+    pub(crate) fn witness_tx_sellback<T: Borrow<TxOut>>(
         &self,
         sellback_tx: &Transaction,
         input_index: usize,
         prevouts: &Prevouts<T>,
-    ) -> Result<TapSighash, Error> {
+        payout_preimage: Preimage,
+        market_maker_secret_key: Scalar,
+        nonce_seed: impl Into<musig2::NonceSeed>,
+    ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.sellback_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(sellback_tx).taproot_script_spend_signature_hash(
@@ -265,6 +304,23 @@ impl SplitSpendInfo {
             leaf_hash,
             TapSighashType::Default,
         )?;
-        Ok(sighash)
+
+        let signature: CompactSignature =
+            musig2::sign_solo(market_maker_secret_key, sighash, nonce_seed);
+
+        let sellback_control_block = self
+            .spend_info
+            .control_block(&(self.sellback_script.clone(), LeafVersion::TapScript))
+            .expect("sellback script cannot be missing");
+
+        // The witness stack for the sellback TX which spends a split TX output is:
+        // <mm_sig> <payout_preimage> <script> <ctrl_block>
+        let mut witness = Witness::new();
+        witness.push(signature.serialize());
+        witness.push(payout_preimage);
+        witness.push(&self.sellback_script);
+        witness.push(sellback_control_block.serialize());
+
+        Ok(witness)
     }
 }
