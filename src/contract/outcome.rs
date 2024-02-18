@@ -100,7 +100,7 @@ pub(crate) fn build_outcome_txs(
 pub(crate) fn partial_sign_outcome_txs<'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
-    seckey: impl Into<Scalar>,
+    seckey: Scalar,
     secnonces: impl IntoIterator<Item = SecNonce>,
     aggnonces: impl IntoIterator<Item = &'a AggNonce>,
 ) -> Result<Vec<PartialSignature>, Error> {
@@ -108,7 +108,6 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
     let funding_spend_info = &outcome_build_out.funding_spend_info;
 
     // Confirm the key is a part of the group.
-    let seckey = seckey.into();
     funding_spend_info
         .key_agg_ctx()
         .pubkey_index(seckey.base_point_mul())

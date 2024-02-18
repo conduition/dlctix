@@ -123,11 +123,10 @@ pub(crate) fn partial_sign_split_txs<'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
-    seckey: impl Into<Scalar>,
+    seckey: Scalar,
     secnonces: impl IntoIterator<Item = SecNonce>,
     aggnonces: impl IntoIterator<Item = &'a AggNonce>,
 ) -> Result<BTreeMap<WinCondition, PartialSignature>, Error> {
-    let seckey = seckey.into();
     let pubkey = seckey.base_point_mul();
 
     let mut partial_signatures = BTreeMap::<WinCondition, PartialSignature>::new();
