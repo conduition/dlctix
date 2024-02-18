@@ -2,6 +2,8 @@ use bitcoin::{transaction::InputWeightPrediction, Amount, FeeRate};
 
 use crate::errors::Error;
 
+/// Compute the fee for a transaction given a fixed [`FeeRate`], input weights,
+/// and output script lengths.
 pub(crate) fn fee_calc_safe<I, O>(
     fee_rate: FeeRate,
     input_weights: I,
@@ -16,6 +18,9 @@ where
     Ok(fee)
 }
 
+/// Safely compute the given output amount by subtracting the fee
+/// amount from the amount of available coins. Returns an error if
+/// the result is negative, or is less than the given dust threshold.
 pub(crate) fn fee_subtract_safe(
     available_coins: Amount,
     fee: Amount,

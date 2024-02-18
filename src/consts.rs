@@ -1,9 +1,9 @@
 /// The serialized length of a P2TR script pubkey.
-pub const P2TR_SCRIPT_PUBKEY_SIZE: usize = 34;
+pub(crate) const P2TR_SCRIPT_PUBKEY_SIZE: usize = 34;
 
 /// This was computed using [`bitcoin`] v0.31.1.
 /// Test coverage ensures this stays is up-to-date.
-pub const P2TR_DUST_VALUE: bitcoin::Amount = bitcoin::Amount::from_sat(330);
+pub(crate) const P2TR_DUST_VALUE: bitcoin::Amount = bitcoin::Amount::from_sat(330);
 
 #[cfg(test)]
 mod tests {

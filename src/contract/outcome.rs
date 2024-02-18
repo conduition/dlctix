@@ -9,10 +9,27 @@ use crate::{
     spend_info::{FundingSpendInfo, OutcomeSpendInfo},
 };
 
+/// Represents the output of building the set of outcome transactions.
+/// This contains cached data used for constructing further transactions,
+/// or signing the outcome transactions themselves.
 pub(crate) struct OutcomeTransactionBuildOutput {
     pub(crate) outcome_txs: Vec<Transaction>,
     pub(crate) outcome_spend_infos: Vec<OutcomeSpendInfo>,
     funding_spend_info: FundingSpendInfo,
+}
+
+impl OutcomeTransactionBuildOutput {
+    /// Return the set of mutually exclusive outcome transactions. One of these
+    /// transactions will be executed depending on the oracle's attestation.
+    pub fn outcome_txs(&self) -> &[Transaction] {
+        &self.outcome_txs
+    }
+
+    //     /// Return a slice of the spending info objects needed to spend
+    //     /// from an outcome transaction.
+    //     pub(crate) fn outcome_spend_infos(&self) -> &[OutcomeSpendInfo] {
+    //         &self.outcome_spend_infos
+    //     }
 }
 
 /// Construct a set of unsigned outcome transactions which spend from the funding TX.
@@ -70,6 +87,10 @@ pub(crate) fn build_outcome_txs(
     Ok(output)
 }
 
+/// Construct a set of partial signatures for the outcome transactions.
+///
+/// The number of signatures and nonces required can be computed by using
+/// checking the length of [`OutcomeTransactionBuildOutput::outcome_txs`].
 pub(crate) fn partial_sign_outcome_txs<'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
@@ -98,9 +119,9 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
         let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
 
         // All outcome TX signatures should be locked by the oracle's outcome point.
-        let outcome_lock_point = params
+        let attestation_lock_point = params
             .event
-            .outcome_lock_point(outcome_index)
+            .attestation_lock_point(outcome_index)
             .ok_or(Error)?;
 
         // Hash the outcome TX.
@@ -112,7 +133,7 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
             seckey,
             secnonce,
             aggnonce,
-            outcome_lock_point,
+            attestation_lock_point,
             sighash,
         )?;
 
@@ -122,6 +143,9 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
 }
 
 /// Verify a player's partial adaptor signatures on the outcome transactions.
+///
+/// The number of signatures and nonces required can be computed by using
+/// checking the length of [`OutcomeTransactionBuildOutput::outcome_txs`].
 pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
@@ -146,16 +170,16 @@ pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
 
         // All outcome TX signatures should be locked by the oracle's outcome point.
-        let outcome_lock_point = params
+        let attestation_lock_point = params
             .event
-            .outcome_lock_point(outcome_index)
+            .attestation_lock_point(outcome_index)
             .ok_or(Error)?;
 
         musig2::adaptor::verify_partial(
             funding_spend_info.key_agg_ctx(),
             partial_sig,
             aggnonce,
-            outcome_lock_point,
+            attestation_lock_point,
             player.pubkey,
             pubnonce,
             sighash,
@@ -165,6 +189,15 @@ pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
     Ok(())
 }
 
+/// Aggregate groups of partial signatures for all outcome transactions.
+///
+/// Before running this method, the partial signatures should all have been
+/// individually verified so that any blame can be assigned to signers
+/// who submitted invalid signatures.
+///
+/// If all partial signatures are valid, then aggregation succeeds and this
+/// function outputs a set of adaptor signatures which are valid once adapted
+/// with the oracle's attestation.
 pub(crate) fn aggregate_outcome_tx_adaptor_signatures<'a, S>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
@@ -189,9 +222,9 @@ where
 
             let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
 
-            let outcome_lock_point = params
+            let attestation_lock_point = params
                 .event
-                .outcome_lock_point(outcome_index)
+                .attestation_lock_point(outcome_index)
                 .ok_or(Error)?;
 
             // Hash the outcome TX.
@@ -200,7 +233,7 @@ where
             let adaptor_sig = musig2::adaptor::aggregate_partial_signatures(
                 funding_spend_info.key_agg_ctx(),
                 aggnonce,
-                outcome_lock_point,
+                attestation_lock_point,
                 partial_sigs,
                 sighash,
             )?;
@@ -208,4 +241,27 @@ where
             Ok(adaptor_sig)
         })
         .collect()
+}
+
+/// Construct an input to spend an outcome transaction for a specific outcome.
+pub(crate) fn outcome_tx_prevout(
+    outcome_build_out: &OutcomeTransactionBuildOutput,
+    outcome_index: usize,
+    block_delay: u16,
+) -> Result<TxIn, Error> {
+    let outcome_tx = outcome_build_out
+        .outcome_txs()
+        .get(outcome_index)
+        .ok_or(Error)?;
+
+    let outcome_input = TxIn {
+        previous_output: OutPoint {
+            txid: outcome_tx.txid(),
+            vout: 0,
+        },
+        sequence: Sequence::from_height(block_delay),
+        ..TxIn::default()
+    };
+
+    Ok(outcome_input)
 }

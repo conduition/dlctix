@@ -1,10 +1,10 @@
-use bitcoin::{absolute::LockTime, OutPoint, Sequence, Transaction, TxIn, TxOut};
+use bitcoin::{absolute::LockTime, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut};
 use musig2::{AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::Scalar;
 
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
-    contract::{fees, outcome::OutcomeTransactionBuildOutput},
+    contract::{self, fees, outcome::OutcomeTransactionBuildOutput},
     contract::{ContractParameters, WinCondition},
     errors::Error,
     parties::Player,
@@ -13,23 +13,33 @@ use crate::{
 
 use std::{borrow::Borrow, collections::BTreeMap};
 
+/// Represents the output of building the set of split transactions.
+/// This contains cached data used for constructing further transactions,
+/// or signing the split transactions themselves.
 pub(crate) struct SplitTransactionBuildOutput {
     split_txs: Vec<Transaction>,
     split_spend_infos: BTreeMap<WinCondition, SplitSpendInfo>,
 }
 
-/// Build the set of split transactions which splits payouts into per-player
+impl SplitTransactionBuildOutput {
+    /// Return the set of mutually exclusive split transactions. Each of these
+    /// transactions spend from a corresponding previous outcome transaction.
+    pub fn split_txs(&self) -> &[Transaction] {
+        &self.split_txs
+    }
+}
+
+/// Build the set of split transactions which splits an outcome TX into per-player
 /// payout contracts between the player and the market maker.
 pub(crate) fn build_split_txs(
     params: &ContractParameters,
     outcome_build_output: &OutcomeTransactionBuildOutput,
 ) -> Result<SplitTransactionBuildOutput, Error> {
-    let outcome_txs = &outcome_build_output.outcome_txs;
-
+    let n_outcomes = params.outcome_payouts.len();
     let mut split_spend_infos = BTreeMap::<WinCondition, SplitSpendInfo>::new();
-    let mut split_txs = Vec::<Transaction>::with_capacity(outcome_txs.len());
+    let mut split_txs = Vec::<Transaction>::with_capacity(n_outcomes);
 
-    for (outcome_index, outcome_tx) in outcome_txs.into_iter().enumerate() {
+    for outcome_index in 0..params.outcome_payouts.len() {
         let payout_map = params.outcome_payouts.get(outcome_index).ok_or(Error)?;
 
         let outcome_spend_info = &outcome_build_output
@@ -46,15 +56,11 @@ pub(crate) fn build_split_txs(
         let fee_shared = fee_total / payout_map.len() as u64;
         let total_payout_weight: u64 = payout_map.values().copied().sum();
 
-        let outcome_input = TxIn {
-            previous_output: OutPoint {
-                txid: outcome_tx.txid(),
-                vout: 0,
-            },
-            // Split TXs have 1*delta block delay
-            sequence: Sequence::from_height(params.relative_locktime_block_delta),
-            ..TxIn::default()
-        };
+        let outcome_input = contract::outcome::outcome_tx_prevout(
+            outcome_build_output,
+            outcome_index,
+            params.relative_locktime_block_delta, // Split TXs have 1*delta block delay
+        )?;
 
         // payout_map is a btree, so outputs are automatically sorted by player.
         let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
@@ -162,6 +168,12 @@ pub(crate) fn partial_sign_split_txs<'a>(
     Ok(partial_signatures)
 }
 
+/// Verify the partial signatures provided by a signer across every split transaction.
+///
+/// Since each split transaction may require multiple signatures (one for each [`WinCondition`]),
+/// the nonces and signatures must be provided in the form of a [`BTreeMap`], which maps
+/// a [`WinCondition`] to the appropriate signature for that script spending path.
+/// If any signatures or nonces are missing, this method returns an error.
 pub(crate) fn verify_split_tx_partial_signatures(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
@@ -207,6 +219,11 @@ pub(crate) fn verify_split_tx_partial_signatures(
 }
 
 /// Aggregate all partial signatures on every spending path of all split transactions.
+///
+/// Since each split transaction may require multiple signatures (one for each [`WinCondition`]),
+/// the nonces and signatures must be provided in the form of a [`BTreeMap`], which maps
+/// a [`WinCondition`] to the appropriate signature for that script spending path.
+/// If any signatures or nonces are missing, this method returns an error.
 pub(crate) fn aggregate_split_tx_signatures<'s, S, P>(
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
@@ -251,4 +268,39 @@ where
             Ok((win_cond, compact_sig))
         })
         .collect()
+}
+
+/// Construct an input to spend a given player's output of the split transaction
+/// for a specific outcome. Also returns the value of that prevout.
+pub(crate) fn split_tx_prevout(
+    params: &ContractParameters,
+    split_build_out: &SplitTransactionBuildOutput,
+    outcome_index: usize,
+    winner: &Player,
+    block_delay: u16,
+) -> Result<(TxIn, Amount), Error> {
+    let split_tx = split_build_out
+        .split_txs()
+        .get(outcome_index)
+        .ok_or(Error)?;
+
+    let payout_map = params.outcome_payouts.get(outcome_index).ok_or(Error)?;
+    let split_tx_output_index = payout_map.keys().position(|p| p == winner).ok_or(Error)?;
+
+    let input = TxIn {
+        previous_output: OutPoint {
+            txid: split_tx.txid(),
+            vout: split_tx_output_index as u32,
+        },
+        sequence: Sequence::from_height(block_delay),
+        ..TxIn::default()
+    };
+
+    let output_value = split_tx
+        .output
+        .get(split_tx_output_index)
+        .ok_or(Error)?
+        .value;
+
+    Ok((input, output_value))
 }

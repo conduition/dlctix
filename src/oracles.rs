@@ -18,7 +18,7 @@ pub struct EventAnnouncment {
 
 impl EventAnnouncment {
     /// Computes the oracle's locking point for the given outcome index.
-    pub fn outcome_lock_point(&self, index: usize) -> Option<MaybePoint> {
+    pub fn attestation_lock_point(&self, index: usize) -> Option<MaybePoint> {
         let msg = &self.outcome_messages.get(index)?;
 
         let e: MaybeScalar = musig2::compute_challenge_hash_tweak(
@@ -31,9 +31,9 @@ impl EventAnnouncment {
         Some(self.nonce_point + e * self.oracle_pubkey)
     }
 
-    /// Computes the oracle's unllocking scalar - the discrete log of the
+    /// Computes the oracle's attestation secret scalar - the discrete log of the
     /// locking point - for the given outcome index.
-    pub fn outcome_secret(
+    pub fn attestation_secret(
         &self,
         index: usize,
         oracle_seckey: impl Into<Scalar>,
