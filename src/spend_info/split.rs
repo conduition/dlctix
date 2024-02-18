@@ -1,12 +1,15 @@
 use bitcoin::{
     key::constants::SCHNORR_SIGNATURE_SIZE,
     opcodes::all::*,
-    taproot::{LeafVersion, TaprootSpendInfo},
+    sighash::{Prevouts, SighashCache},
+    taproot::{LeafVersion, TapLeafHash, TaprootSpendInfo},
     transaction::InputWeightPrediction,
-    Amount, ScriptBuf,
+    Amount, ScriptBuf, TapSighash, TapSighashType, Transaction, TxOut,
 };
 use musig2::KeyAggContext;
 use secp::Point;
+
+use std::borrow::Borrow;
 
 use crate::{
     errors::Error,
@@ -208,5 +211,60 @@ impl SplitSpendInfo {
         )
     }
 
-    // pub(crate) fn sighash_tx_win(&self)
+    /// Derive the signature hash for a win transaction, which spends from
+    /// a split transaction.
+    pub(crate) fn sighash_tx_win<T: Borrow<TxOut>>(
+        &self,
+        win_tx: &Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+    ) -> Result<TapSighash, Error> {
+        let leaf_hash = TapLeafHash::from_script(&self.win_script, LeafVersion::TapScript);
+
+        let sighash = SighashCache::new(win_tx).taproot_script_spend_signature_hash(
+            input_index,
+            prevouts,
+            leaf_hash,
+            TapSighashType::Default,
+        )?;
+        Ok(sighash)
+    }
+
+    /// Derive the signature hash for a reclaim transaction, which spends from
+    /// a split transaction.
+    pub(crate) fn sighash_tx_reclaim<T: Borrow<TxOut>>(
+        &self,
+        reclaim_tx: &Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+    ) -> Result<TapSighash, Error> {
+        let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
+
+        let sighash = SighashCache::new(reclaim_tx).taproot_script_spend_signature_hash(
+            input_index,
+            prevouts,
+            leaf_hash,
+            TapSighashType::Default,
+        )?;
+        Ok(sighash)
+    }
+
+    /// Derive the signature hash for a sellback transaction, which spends from
+    /// a split transaction.
+    pub(crate) fn sighash_tx_sellback<T: Borrow<TxOut>>(
+        &self,
+        sellback_tx: &Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+    ) -> Result<TapSighash, Error> {
+        let leaf_hash = TapLeafHash::from_script(&self.sellback_script, LeafVersion::TapScript);
+
+        let sighash = SighashCache::new(sellback_tx).taproot_script_spend_signature_hash(
+            input_index,
+            prevouts,
+            leaf_hash,
+            TapSighashType::Default,
+        )?;
+        Ok(sighash)
+    }
 }

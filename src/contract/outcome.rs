@@ -24,12 +24,6 @@ impl OutcomeTransactionBuildOutput {
     pub fn outcome_txs(&self) -> &[Transaction] {
         &self.outcome_txs
     }
-
-    //     /// Return a slice of the spending info objects needed to spend
-    //     /// from an outcome transaction.
-    //     pub(crate) fn outcome_spend_infos(&self) -> &[OutcomeSpendInfo] {
-    //         &self.outcome_spend_infos
-    //     }
 }
 
 /// Construct a set of unsigned outcome transactions which spend from the funding TX.
