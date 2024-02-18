@@ -1,5 +1,5 @@
 [package]
-name = "ticketed-dlc"
+name = "dlctix"
 version = "0.1.0"
 edition = "2021"
 authors = ["conduition <conduition@proton.me>"]
