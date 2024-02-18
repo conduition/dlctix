@@ -13,16 +13,28 @@ use crate::{
 /// This contains cached data used for constructing further transactions,
 /// or signing the outcome transactions themselves.
 pub(crate) struct OutcomeTransactionBuildOutput {
-    pub(crate) outcome_txs: Vec<Transaction>,
-    pub(crate) outcome_spend_infos: Vec<OutcomeSpendInfo>,
+    outcome_txs: Vec<Transaction>,
+    outcome_spend_infos: Vec<OutcomeSpendInfo>,
     funding_spend_info: FundingSpendInfo,
 }
 
 impl OutcomeTransactionBuildOutput {
     /// Return the set of mutually exclusive outcome transactions. One of these
     /// transactions will be executed depending on the oracle's attestation.
-    pub fn outcome_txs(&self) -> &[Transaction] {
+    pub(crate) fn outcome_txs(&self) -> &[Transaction] {
         &self.outcome_txs
+    }
+
+    /// Return the set of mutually exclusive outcome spend info objects.
+    pub(crate) fn outcome_spend_infos(&self) -> &[OutcomeSpendInfo] {
+        &self.outcome_spend_infos
+    }
+
+    /// Returns the number of [`musig2`] partial signatures required by each player
+    /// in the DLC (and the market maker). This is the same as the length of
+    /// [`Self::outcome_txs`].
+    pub(crate) fn signatures_required(&self) -> usize {
+        self.outcome_txs.len()
     }
 }
 
@@ -84,7 +96,7 @@ pub(crate) fn build_outcome_txs(
 /// Construct a set of partial signatures for the outcome transactions.
 ///
 /// The number of signatures and nonces required can be computed by using
-/// checking the length of [`OutcomeTransactionBuildOutput::outcome_txs`].
+/// checking the length of [`OutcomeTransactionBuildOutput::signatures_required`].
 pub(crate) fn partial_sign_outcome_txs<'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
@@ -139,7 +151,7 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
 /// Verify a player's partial adaptor signatures on the outcome transactions.
 ///
 /// The number of signatures and nonces required can be computed by using
-/// checking the length of [`OutcomeTransactionBuildOutput::outcome_txs`].
+/// checking the length of [`OutcomeTransactionBuildOutput::signatures_required`].
 pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,

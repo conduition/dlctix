@@ -1,4 +1,4 @@
-use bitcoin::{absolute::LockTime, OutPoint, Sequence, Transaction, TxIn, TxOut};
+use bitcoin::{absolute::LockTime, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut};
 use musig2::{AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::Scalar;
 
@@ -24,8 +24,16 @@ pub(crate) struct SplitTransactionBuildOutput {
 impl SplitTransactionBuildOutput {
     /// Return the set of mutually exclusive split transactions. Each of these
     /// transactions spend from a corresponding previous outcome transaction.
-    pub fn split_txs(&self) -> &[Transaction] {
+    pub(crate) fn split_txs(&self) -> &[Transaction] {
         &self.split_txs
+    }
+
+    /// Returns the number of [`musig2`] partial signatures required by each player
+    /// in the DLC (and the market maker). This is the sum of all possible win conditions
+    /// across every split transaction (i.e. counting the number of winners in every
+    /// possible outcome).
+    pub(crate) fn signatures_required(&self) -> usize {
+        self.split_spend_infos.len()
     }
 }
 
@@ -43,18 +51,21 @@ pub(crate) fn build_split_txs(
         let payout_map = params.outcome_payouts.get(outcome_index).ok_or(Error)?;
 
         let outcome_spend_info = &outcome_build_output
-            .outcome_spend_infos
+            .outcome_spend_infos()
             .get(outcome_index)
             .ok_or(Error)?;
 
         // Fee estimation
         let input_weight = outcome_spend_info.input_weight_for_split_tx();
         let spk_lengths = std::iter::repeat(P2TR_SCRIPT_PUBKEY_SIZE).take(payout_map.len());
-        let fee_total = fees::fee_calc_safe(params.fee_rate, [input_weight], spk_lengths)?;
-
-        // Mining fees are distributed equally among all winners, regardless of payout weight.
-        let fee_shared = fee_total / payout_map.len() as u64;
-        let total_payout_weight: u64 = payout_map.values().copied().sum();
+        let payout_values: BTreeMap<&Player, Amount> = fees::fee_calc_shared(
+            outcome_spend_info.outcome_value(),
+            params.fee_rate,
+            [input_weight],
+            spk_lengths,
+            P2TR_DUST_VALUE,
+            &payout_map,
+        )?;
 
         let (outcome_input, _) = contract::outcome::outcome_tx_prevout(
             outcome_build_output,
@@ -62,13 +73,9 @@ pub(crate) fn build_split_txs(
             params.relative_locktime_block_delta, // Split TXs have 1*delta block delay
         )?;
 
-        // payout_map is a btree, so outputs are automatically sorted by player.
+        // payout_values is a btree, so outputs are automatically sorted by player.
         let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
-        for (&player, &payout_weight) in payout_map.iter() {
-            // Payout amounts are computed by using relative weights.
-            let payout = outcome_spend_info.outcome_value() * payout_weight / total_payout_weight;
-            let payout_value = fees::fee_subtract_safe(payout, fee_shared, P2TR_DUST_VALUE)?;
-
+        for (&&player, &payout_value) in payout_values.iter() {
             let split_spend_info = SplitSpendInfo::new(
                 player,
                 &params.market_maker,
@@ -145,7 +152,7 @@ pub(crate) fn partial_sign_split_txs<'a>(
 
         // Hash the split TX.
         let outcome_spend_info = outcome_build_out
-            .outcome_spend_infos
+            .outcome_spend_infos()
             .get(win_cond.outcome_index)
             .ok_or(Error)?;
 
@@ -197,7 +204,7 @@ pub(crate) fn verify_split_tx_partial_signatures(
         let partial_sig = partial_signatures.get(&win_cond).copied().ok_or(Error)?; // must provide all sigs
 
         let outcome_spend_info = outcome_build_out
-            .outcome_spend_infos
+            .outcome_spend_infos()
             .get(win_cond.outcome_index)
             .ok_or(Error)?;
 
@@ -251,7 +258,7 @@ where
             let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?;
 
             let outcome_spend_info = outcome_build_out
-                .outcome_spend_infos
+                .outcome_spend_infos()
                 .get(win_cond.outcome_index)
                 .ok_or(Error)?;
 

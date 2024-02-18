@@ -2,7 +2,7 @@ pub(crate) mod fees;
 pub(crate) mod outcome;
 pub(crate) mod split;
 
-use bitcoin::{Amount, FeeRate};
+use bitcoin::{transaction::InputWeightPrediction, Amount, FeeRate};
 use secp::Point;
 
 use crate::{
@@ -22,6 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// ```not_rust
 /// total_payout = contract_value * weights[player] / sum(weights)
 /// ```
+///
+/// Players who should not receive a payout from an outcome MUST NOT be given an entry
+/// in a `PayoutWeights` map.
 pub type PayoutWeights = BTreeMap<Player, u64>;
 
 /// Represents the parameters which all players and the market maker must agree on
@@ -80,7 +83,7 @@ pub struct WinCondition {
 
 impl ContractParameters {
     pub(crate) fn outcome_output_value(&self) -> Result<Amount, Error> {
-        let input_weights = [bitcoin::transaction::InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
+        let input_weights = [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
         let fee = fees::fee_calc_safe(self.fee_rate, input_weights, [P2TR_SCRIPT_PUBKEY_SIZE])?;
         let outcome_value = fees::fee_subtract_safe(self.funding_value, fee, P2TR_DUST_VALUE)?;
         Ok(outcome_value)
