@@ -2,7 +2,7 @@
 
 Ticketed [Discreet Log Contracts (DLCs)](https://bitcoinops.org/en/topics/discreet-log-contracts/) to enable instant buy-in for wager-like contracts on [Bitcoin](https://bitcoin.org).
 
-This project is part of the [Backdrop Build V3 cohort](https://backdropbuild.com). <img src="img/backdrop-logo.png">
+This project is part of the [Backdrop Build V3 cohort](https://backdropbuild.com) <img style="width: 12px;" src="img/backdrop-logo.png">
 
 <img width="50%" src="img/backdrop-build-v3.png">
 
