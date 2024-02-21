@@ -45,15 +45,13 @@ pub struct ContractParameters {
     /// The event whose outcome determines the payouts.
     pub event: EventAnnouncment,
 
-    /// An ordered list of payout under different outcomes. Should align with
-    /// `self.event.outcome_messages`.
-    pub outcome_payouts: Vec<PayoutWeights>,
-
-    /// Who is paid out in the event of an expiry (when the oracle attestation is not
-    /// received by [`event.expiry`][EventAnnouncment::expiry]). If this field is `None`,
-    /// then there is no expiry condition, and the money simply remains locked in the
-    /// funding outpoint until the Oracle's attestation is found.
-    pub expiry_payout: Option<PayoutWeights>,
+    /// A mapping of payout weights under different outcomes. Attestation indexes should
+    /// align with [`self.event.outcome_messages`][EventAnnouncment::outcome_messages].
+    ///
+    /// If this map does not contain a key of [`Outcome::Expiry`], then there is no expiry
+    /// condition, and the money simply remains locked in the funding outpoint until the
+    /// Oracle's attestation is found.
+    pub outcome_payouts: BTreeMap<Outcome, PayoutWeights>,
 
     /// A default mining fee rate to be used for pre-signed transactions.
     pub fee_rate: FeeRate,
@@ -74,10 +72,22 @@ pub struct ContractParameters {
     pub relative_locktime_block_delta: u16,
 }
 
+/// Represents one possible outcome branch of the DLC. This includes both
+/// outcomes attested-to by the Oracle, and expiry.
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub enum Outcome {
+    /// Indicates the oracle attested to a particular outcome of the given index.
+    Attestation(usize),
+
+    /// Indicates the oracle failed to attest to any outcome, and the event expiry
+    /// timelock was reached.
+    Expiry,
+}
+
 /// Points to a situation where a player wins a payout from the DLC.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct WinCondition {
-    pub outcome_index: usize,
+    pub outcome: Outcome,
     pub winner: Player,
 }
 
@@ -89,12 +99,29 @@ impl ContractParameters {
         Ok(outcome_value)
     }
 
+    /// Returns the set of players which this pubkey can sign for.
+    ///
+    /// This might contain multiple players if the same key joined the DLC
+    /// with different ticket/payout hashes.
+    pub fn players_controlled_by_pubkey<'a>(&'a self, pubkey: Point) -> BTreeSet<&'a Player> {
+        self.players
+            .iter()
+            .filter(|player| player.pubkey == pubkey)
+            .collect()
+    }
+
     /// Return the set of all win conditions which the given pubkey will need to sign
     /// split transactions for.
     ///
+    /// If `pubkey` belongs to one or more players, this returns all [`WinCondition`]s
+    /// for outcomes in which the player or players are winners.
+    ///
+    /// If `pubkey` belongs to the market maker, this returns every [`WinCondition`]
+    /// across the entire contract.
+    ///
     /// Returns `None` if the pubkey does not belong to any player in the DLC.
     ///
-    /// Returns an empty `BTreeSet if the player is part of the DLC, but isn't due to
+    /// Returns an empty `BTreeSet` if the player is part of the DLC, but isn't due to
     /// receive any payouts on any DLC outcome.
     pub fn win_conditions_controlled_by_pubkey(
         &self,
@@ -103,13 +130,7 @@ impl ContractParameters {
         // To sign as the market maker, the caller need only provide the correct secret key.
         let is_market_maker = pubkey == self.market_maker.pubkey;
 
-        // This might contain multiple players if the same key joined the DLC
-        // with different ticket/payout hashes.
-        let controlling_players: BTreeSet<&Player> = self
-            .players
-            .iter()
-            .filter(|player| player.pubkey == pubkey)
-            .collect();
+        let controlling_players = self.players_controlled_by_pubkey(pubkey);
 
         // Short circuit if this pubkey is not known.
         if controlling_players.is_empty() && !is_market_maker {
@@ -117,17 +138,14 @@ impl ContractParameters {
         }
 
         let mut win_conditions_to_sign = BTreeSet::<WinCondition>::new();
-        for (outcome_index, payout_map) in self.outcome_payouts.iter().enumerate() {
+        for (&outcome, payout_map) in self.outcome_payouts.iter() {
             // We want to sign the split TX for any win-conditions whose player is controlled
             // by `pubkey`. If we're the market maker, we sign every win condition.
             win_conditions_to_sign.extend(
                 payout_map
                     .keys()
                     .filter(|winner| is_market_maker || controlling_players.contains(winner))
-                    .map(|&winner| WinCondition {
-                        winner,
-                        outcome_index,
-                    }),
+                    .map(|&winner| WinCondition { winner, outcome }),
             );
         }
 

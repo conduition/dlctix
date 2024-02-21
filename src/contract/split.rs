@@ -5,7 +5,7 @@ use secp::Scalar;
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
     contract::{self, fees, outcome::OutcomeTransactionBuildOutput},
-    contract::{ContractParameters, WinCondition},
+    contract::{ContractParameters, Outcome, WinCondition},
     errors::Error,
     parties::Player,
     spend_info::SplitSpendInfo,
@@ -17,14 +17,14 @@ use std::{borrow::Borrow, collections::BTreeMap};
 /// This contains cached data used for constructing further transactions,
 /// or signing the split transactions themselves.
 pub(crate) struct SplitTransactionBuildOutput {
-    split_txs: Vec<Transaction>,
+    split_txs: BTreeMap<Outcome, Transaction>,
     split_spend_infos: BTreeMap<WinCondition, SplitSpendInfo>,
 }
 
 impl SplitTransactionBuildOutput {
     /// Return the set of mutually exclusive split transactions. Each of these
     /// transactions spend from a corresponding previous outcome transaction.
-    pub(crate) fn split_txs(&self) -> &[Transaction] {
+    pub(crate) fn split_txs(&self) -> &BTreeMap<Outcome, Transaction> {
         &self.split_txs
     }
 
@@ -43,16 +43,13 @@ pub(crate) fn build_split_txs(
     params: &ContractParameters,
     outcome_build_output: &OutcomeTransactionBuildOutput,
 ) -> Result<SplitTransactionBuildOutput, Error> {
-    let n_outcomes = params.outcome_payouts.len();
     let mut split_spend_infos = BTreeMap::<WinCondition, SplitSpendInfo>::new();
-    let mut split_txs = Vec::<Transaction>::with_capacity(n_outcomes);
+    let mut split_txs = BTreeMap::<Outcome, Transaction>::new();
 
-    for outcome_index in 0..params.outcome_payouts.len() {
-        let payout_map = params.outcome_payouts.get(outcome_index).ok_or(Error)?;
-
+    for (&outcome, payout_map) in params.outcome_payouts.iter() {
         let outcome_spend_info = &outcome_build_output
             .outcome_spend_infos()
-            .get(outcome_index)
+            .get(&outcome)
             .ok_or(Error)?;
 
         // Fee estimation
@@ -69,7 +66,7 @@ pub(crate) fn build_split_txs(
 
         let (outcome_input, _) = contract::outcome::outcome_tx_prevout(
             outcome_build_output,
-            outcome_index,
+            &outcome,
             params.relative_locktime_block_delta, // Split TXs have 1*delta block delay
         )?;
 
@@ -90,17 +87,19 @@ pub(crate) fn build_split_txs(
 
             let win_cond = WinCondition {
                 winner: player,
-                outcome_index,
+                outcome,
             };
             split_spend_infos.insert(win_cond, split_spend_info);
         }
 
-        split_txs.push(Transaction {
+        let split_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: LockTime::ZERO,
             input: vec![outcome_input],
             output: split_tx_outputs,
-        });
+        };
+
+        split_txs.insert(outcome, split_tx);
     }
 
     let output = SplitTransactionBuildOutput {
@@ -138,23 +137,24 @@ pub(crate) fn partial_sign_split_txs<'a>(
         return Ok(partial_signatures);
     }
 
-    let split_txs = &split_build_out.split_txs;
-
     let mut aggnonce_iter = aggnonces.into_iter();
     let mut secnonce_iter = secnonces.into_iter();
 
     for win_cond in win_conditions_to_sign {
-        let split_tx = split_txs.get(win_cond.outcome_index).ok_or(Error)?;
+        let split_tx = split_build_out
+            .split_txs()
+            .get(&win_cond.outcome)
+            .ok_or(Error)?;
 
         let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
         let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
 
-        // Hash the split TX.
         let outcome_spend_info = outcome_build_out
             .outcome_spend_infos()
-            .get(win_cond.outcome_index)
+            .get(&win_cond.outcome)
             .ok_or(Error)?;
 
+        // Hash the split TX.
         let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
 
         // Partially sign the sighash.
@@ -193,10 +193,11 @@ pub(crate) fn verify_split_tx_partial_signatures(
         .win_conditions_controlled_by_pubkey(player.pubkey)
         .ok_or(Error)?;
 
-    let split_txs = &split_build_out.split_txs;
-
     for win_cond in win_conditions_to_sign {
-        let split_tx = split_txs.get(win_cond.outcome_index).ok_or(Error)?;
+        let split_tx = split_build_out
+            .split_txs()
+            .get(&win_cond.outcome)
+            .ok_or(Error)?;
 
         let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?; // must provide all aggnonces
         let pubnonce = pubnonces.get(&win_cond).ok_or(Error)?; // must provide all pubnonces
@@ -204,7 +205,7 @@ pub(crate) fn verify_split_tx_partial_signatures(
 
         let outcome_spend_info = outcome_build_out
             .outcome_spend_infos()
-            .get(win_cond.outcome_index)
+            .get(&win_cond.outcome)
             .ok_or(Error)?;
 
         // Hash the split TX.
@@ -240,13 +241,14 @@ where
     &'s S: IntoIterator<Item = P>,
     P: Borrow<PartialSignature>,
 {
-    let split_txs = &split_build_out.split_txs;
-
     split_build_out
         .split_spend_infos
         .keys()
         .map(|&win_cond| {
-            let split_tx = split_txs.get(win_cond.outcome_index).ok_or(Error)?;
+            let split_tx = split_build_out
+                .split_txs()
+                .get(&win_cond.outcome)
+                .ok_or(Error)?;
 
             let relevant_partial_sigs = partial_signatures_by_win_cond
                 .get(&win_cond)
@@ -258,7 +260,7 @@ where
 
             let outcome_spend_info = outcome_build_out
                 .outcome_spend_infos()
-                .get(win_cond.outcome_index)
+                .get(&win_cond.outcome)
                 .ok_or(Error)?;
 
             // Hash the split TX.
@@ -282,17 +284,19 @@ where
 pub(crate) fn split_tx_prevout<'x>(
     params: &ContractParameters,
     split_build_out: &'x SplitTransactionBuildOutput,
-    outcome_index: usize,
-    winner: &Player,
+    win_cond: &WinCondition,
     block_delay: u16,
 ) -> Result<(TxIn, &'x TxOut), Error> {
     let split_tx = split_build_out
         .split_txs()
-        .get(outcome_index)
+        .get(&win_cond.outcome)
         .ok_or(Error)?;
 
-    let payout_map = params.outcome_payouts.get(outcome_index).ok_or(Error)?;
-    let split_tx_output_index = payout_map.keys().position(|p| p == winner).ok_or(Error)?;
+    let payout_map = params.outcome_payouts.get(&win_cond.outcome).ok_or(Error)?;
+    let split_tx_output_index = payout_map
+        .keys()
+        .position(|p| p == &win_cond.winner)
+        .ok_or(Error)?;
 
     let input = TxIn {
         previous_output: OutPoint {
