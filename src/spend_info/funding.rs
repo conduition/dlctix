@@ -44,11 +44,11 @@ impl FundingSpendInfo {
 
     /// Returns the TX locking script for funding the ticketed DLC multisig.
     pub(crate) fn script_pubkey(&self) -> ScriptBuf {
-        ScriptBuf::new_p2tr(
-            secp256k1::SECP256K1,
-            self.key_agg_ctx.aggregated_pubkey(),
-            None,
-        )
+        // This is safe because the musig key aggregation formula prevents
+        // participants from hiding tapscript commitments in the aggregated key.
+        let (xonly, _) = self.key_agg_ctx.aggregated_pubkey();
+        let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly);
+        ScriptBuf::new_p2tr_tweaked(tweaked)
     }
 
     /// Compute the signature hash for a given outcome transaction.
