@@ -42,6 +42,14 @@ impl FundingSpendInfo {
         &self.key_agg_ctx
     }
 
+    /// Returns the transaction output which the funding transaction should pay to.
+    pub(crate) fn funding_output(&self) -> TxOut {
+        TxOut {
+            script_pubkey: self.script_pubkey(),
+            value: self.funding_value,
+        }
+    }
+
     /// Returns the TX locking script for funding the ticketed DLC multisig.
     pub(crate) fn script_pubkey(&self) -> ScriptBuf {
         // This is safe because the musig key aggregation formula prevents
@@ -56,10 +64,7 @@ impl FundingSpendInfo {
         &self,
         outcome_tx: &Transaction,
     ) -> Result<TapSighash, bitcoin::sighash::Error> {
-        let funding_prevouts = [TxOut {
-            script_pubkey: self.script_pubkey(),
-            value: self.funding_value,
-        }];
+        let funding_prevouts = [self.funding_output()];
 
         SighashCache::new(outcome_tx).taproot_key_spend_signature_hash(
             0,

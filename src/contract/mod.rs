@@ -2,7 +2,7 @@ pub(crate) mod fees;
 pub(crate) mod outcome;
 pub(crate) mod split;
 
-use bitcoin::{transaction::InputWeightPrediction, Amount, FeeRate};
+use bitcoin::{transaction::InputWeightPrediction, Amount, FeeRate, TxOut};
 use secp::Point;
 
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
     errors::Error,
     oracles::EventAnnouncment,
     parties::{MarketMaker, Player},
+    spend_info::FundingSpendInfo,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -92,6 +93,17 @@ pub struct WinCondition {
 }
 
 impl ContractParameters {
+    /// Returns the transaction output which the funding transaction should pay to.
+    ///
+    /// Avoid overusing this method, as it recomputes the aggregated key every time
+    /// it is invoked. Instead, prefer
+    /// [`TicketedDLC::funding_output`][crate::TicketedDLC::funding_output].
+    pub fn funding_output(&self) -> Result<TxOut, Error> {
+        let spend_info =
+            FundingSpendInfo::new(&self.market_maker, &self.players, self.funding_value)?;
+        Ok(spend_info.funding_output())
+    }
+
     pub(crate) fn outcome_output_value(&self) -> Result<Amount, Error> {
         let input_weights = [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH];
         let fee = fees::fee_calc_safe(self.fee_rate, input_weights, [P2TR_SCRIPT_PUBKEY_SIZE])?;
