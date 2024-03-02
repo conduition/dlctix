@@ -163,6 +163,7 @@ checksum = "1f43e7abc6e724a2c8caf0e558ab838d71e70826f98df85da6a607243efbc83f"
 dependencies = [
  "base16ct",
  "once_cell",
+ "rand",
  "secp",
  "secp256k1",
  "sha2",
@@ -219,6 +220,7 @@ checksum = "787bed714ffe1439d1f8ce84e2ceed8daf6d5737f5422108a5de88030fc597b6"
 dependencies = [
  "base16ct",
  "once_cell",
+ "rand",
  "secp256k1",
  "subtle",
 ]
@@ -230,6 +232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d24b59d129cdadea20aea4fb2352fa053712e5d713eee47d700cd4b2bc002f10"
 dependencies = [
  "bitcoin_hashes",
+ "rand",
  "secp256k1-sys",
 ]
 

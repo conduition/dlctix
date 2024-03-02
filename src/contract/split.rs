@@ -27,14 +27,6 @@ impl SplitTransactionBuildOutput {
     pub(crate) fn split_txs(&self) -> &BTreeMap<Outcome, Transaction> {
         &self.split_txs
     }
-
-    /// Returns the number of [`musig2`] partial signatures required by each player
-    /// in the DLC (and the market maker). This is the sum of all possible win conditions
-    /// across every split transaction (i.e. counting the number of winners in every
-    /// possible outcome).
-    pub(crate) fn signatures_required(&self) -> usize {
-        self.split_spend_infos.len()
-    }
 }
 
 /// Build the set of split transactions which splits an outcome TX into per-player
@@ -123,8 +115,8 @@ pub(crate) fn partial_sign_split_txs<'a>(
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
     seckey: Scalar,
-    secnonces: impl IntoIterator<Item = SecNonce>,
-    aggnonces: impl IntoIterator<Item = &'a AggNonce>,
+    mut secnonces: BTreeMap<WinCondition, SecNonce>,
+    aggnonces: &BTreeMap<WinCondition, AggNonce>,
 ) -> Result<BTreeMap<WinCondition, PartialSignature>, Error> {
     let pubkey = seckey.base_point_mul();
 
@@ -137,17 +129,14 @@ pub(crate) fn partial_sign_split_txs<'a>(
         return Ok(partial_signatures);
     }
 
-    let mut aggnonce_iter = aggnonces.into_iter();
-    let mut secnonce_iter = secnonces.into_iter();
-
     for win_cond in win_conditions_to_sign {
         let split_tx = split_build_out
             .split_txs()
             .get(&win_cond.outcome)
             .ok_or(Error)?;
 
-        let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
-        let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
+        let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?; // must provide all aggnonces
+        let secnonce = secnonces.remove(&win_cond).ok_or(Error)?; // must provide all secnonces
 
         let outcome_spend_info = outcome_build_out
             .outcome_spend_infos()

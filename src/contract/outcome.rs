@@ -32,6 +32,11 @@ impl OutcomeTransactionBuildOutput {
         &self.outcome_spend_infos
     }
 
+    /// Return the funding transaction's spending info object.
+    pub(crate) fn funding_spend_info(&self) -> &FundingSpendInfo {
+        &self.funding_spend_info
+    }
+
     /// Returns the number of [`musig2`] partial signatures required by each player
     /// in the DLC (and the market maker).
     ///
@@ -113,8 +118,8 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
     seckey: Scalar,
-    secnonces: impl IntoIterator<Item = SecNonce>,
-    aggnonces: impl IntoIterator<Item = &'a AggNonce>,
+    mut secnonces: BTreeMap<Outcome, SecNonce>,
+    aggnonces: &BTreeMap<Outcome, AggNonce>,
 ) -> Result<BTreeMap<Outcome, PartialSignature>, Error> {
     let outcome_txs = &outcome_build_out.outcome_txs;
     let funding_spend_info = &outcome_build_out.funding_spend_info;
@@ -127,12 +132,9 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
 
     let mut outcome_partial_sigs = BTreeMap::<Outcome, PartialSignature>::new();
 
-    let mut aggnonce_iter = aggnonces.into_iter();
-    let mut secnonce_iter = secnonces.into_iter();
-
     for (&outcome, outcome_tx) in outcome_txs {
-        let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
-        let secnonce = secnonce_iter.next().ok_or(Error)?; // must provide enough secnonces
+        let aggnonce = aggnonces.get(&outcome).ok_or(Error)?; // must provide all aggnonces
+        let secnonce = secnonces.remove(&outcome).ok_or(Error)?; // must provide all secnonces
 
         // Hash the outcome TX.
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;

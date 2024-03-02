@@ -163,4 +163,121 @@ impl ContractParameters {
 
         Some(win_conditions_to_sign)
     }
+
+    pub fn sigmap_for_pubkey(&self, pubkey: Point) -> Option<SigMap<()>> {
+        let win_conditions = self.win_conditions_controlled_by_pubkey(pubkey)?;
+        let sigmap = SigMap {
+            by_outcome: self
+                .outcome_payouts
+                .iter()
+                .map(|(&outcome, _)| (outcome, ()))
+                .collect(),
+            by_win_condition: win_conditions.into_iter().map(|w| (w, ())).collect(),
+        };
+        Some(sigmap)
+    }
+
+    /// Returns an empty sigmap covering every outcome and every win condition.
+    /// This encompasses every possible message whose signatures are needed
+    /// to set up the contract.
+    pub fn full_sigmap(&self) -> SigMap<()> {
+        let mut all_win_conditions = BTreeMap::new();
+        for (&outcome, payout_map) in self.outcome_payouts.iter() {
+            all_win_conditions.extend(
+                payout_map
+                    .keys()
+                    .map(|&winner| (WinCondition { winner, outcome }, ())),
+            );
+        }
+
+        SigMap {
+            by_outcome: self
+                .outcome_payouts
+                .iter()
+                .map(|(&outcome, _)| (outcome, ()))
+                .collect(),
+            by_win_condition: all_win_conditions,
+        }
+    }
+}
+
+/// Represents a mapping of different signature requirements to some arbitrary type T.
+/// This can be used to efficiently look up signatures, nonces, etc, for each
+/// outcome transaction, and for different [`WinCondition`]s within each split transaction.
+///
+/// TODO serde serialization
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct SigMap<T> {
+    pub by_outcome: BTreeMap<Outcome, T>,
+    pub by_win_condition: BTreeMap<WinCondition, T>,
+}
+
+impl<T> SigMap<T> {
+    pub fn map<V, F1, F2>(self, map_outcomes: F1, map_win_conditions: F2) -> SigMap<V>
+    where
+        F1: Fn(Outcome, T) -> V,
+        F2: Fn(WinCondition, T) -> V,
+    {
+        SigMap {
+            by_outcome: self
+                .by_outcome
+                .into_iter()
+                .map(|(o, t)| (o, map_outcomes(o, t)))
+                .collect(),
+            by_win_condition: self
+                .by_win_condition
+                .into_iter()
+                .map(|(w, t)| (w, map_win_conditions(w, t)))
+                .collect(),
+        }
+    }
+
+    pub fn map_values<V, F>(self, mut map_fn: F) -> SigMap<V>
+    where
+        F: FnMut(T) -> V,
+    {
+        SigMap {
+            by_outcome: self
+                .by_outcome
+                .into_iter()
+                .map(|(o, t)| (o, map_fn(t)))
+                .collect(),
+            by_win_condition: self
+                .by_win_condition
+                .into_iter()
+                .map(|(w, t)| (w, map_fn(t)))
+                .collect(),
+        }
+    }
+
+    pub fn by_ref(&self) -> SigMap<&T> {
+        SigMap {
+            by_outcome: self.by_outcome.iter().map(|(&k, v)| (k, v)).collect(),
+            by_win_condition: self.by_win_condition.iter().map(|(&k, v)| (k, v)).collect(),
+        }
+    }
+
+    /// Returns true if the given sigmap mirrors the keys of this sigmap exactly.
+    /// This means both sigmaps have entries for all the same outcomes and win
+    /// conditions, without any extra leftover entries.
+    pub fn is_mirror<V>(&self, other: &SigMap<V>) -> bool {
+        for outcome in self.by_outcome.keys() {
+            if !other.by_outcome.contains_key(outcome) {
+                return false;
+            }
+        }
+        for win_cond in self.by_win_condition.keys() {
+            if !other.by_win_condition.contains_key(win_cond) {
+                return false;
+            }
+        }
+
+        if self.by_outcome.len() != other.by_outcome.len()
+            || self.by_win_condition.len() != other.by_win_condition.len()
+        {
+            return false;
+        }
+
+        true
+    }
 }
