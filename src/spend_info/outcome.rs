@@ -100,7 +100,7 @@ impl OutcomeSpendInfo {
             .values()
             .cloned()
             .map(|script| (1, script))
-            .chain([(999999999, reclaim_script.clone())]); // reclaim script gets highest priority
+            .chain([(u32::MAX, reclaim_script.clone())]); // reclaim script gets highest priority
 
         let tr_spend_info = TaprootSpendInfo::with_huffman_tree(
             secp256k1::SECP256K1,
