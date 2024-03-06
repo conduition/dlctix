@@ -8,7 +8,7 @@ use secp::Point;
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
     errors::Error,
-    oracles::EventAnnouncment,
+    oracles::EventAnnouncement,
     parties::{MarketMaker, Player},
     spend_info::FundingSpendInfo,
 };
@@ -44,10 +44,10 @@ pub struct ContractParameters {
     pub players: BTreeSet<Player>,
 
     /// The event whose outcome determines the payouts.
-    pub event: EventAnnouncment,
+    pub event: EventAnnouncement,
 
     /// A mapping of payout weights under different outcomes. Attestation indexes should
-    /// align with [`self.event.outcome_messages`][EventAnnouncment::outcome_messages].
+    /// align with [`self.event.outcome_messages`][EventAnnouncement::outcome_messages].
     ///
     /// If this map does not contain a key of [`Outcome::Expiry`], then there is no expiry
     /// condition, and the money simply remains locked in the funding outpoint until the

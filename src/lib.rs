@@ -1,22 +1,19 @@
 //! THIS IS A PLACEHOLDER PACKAGE. DO NOT INSTALL THIS.
 
 pub(crate) mod consts;
+pub(crate) mod contract;
 pub(crate) mod errors;
 pub(crate) mod oracles;
 pub(crate) mod parties;
 pub(crate) mod spend_info;
 
-pub mod contract;
 pub mod hashlock;
 
 pub use secp;
 
-pub use parties::{MarketMaker, Player};
-
 use contract::{
     outcome::{OutcomeSignatures, OutcomeTransactionBuildOutput},
     split::SplitTransactionBuildOutput,
-    ContractParameters, SigMap, WinCondition,
 };
 use errors::Error;
 
@@ -25,6 +22,10 @@ use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, Pub
 use secp::{Point, Scalar};
 
 use std::collections::BTreeMap;
+
+pub use contract::{ContractParameters, Outcome, SigMap, WinCondition};
+pub use oracles::EventAnnouncement;
+pub use parties::{MarketMaker, Player};
 
 /// Represents the combined output of building all transactions and precomputing
 /// all necessary data for a ticketed DLC.
@@ -92,7 +93,7 @@ pub struct ContractSignatures {
     /// [`Outcome::Expiry`] payout condition.
     pub expiry_tx_signature: Option<CompactSignature>,
     /// An ordered vector of adaptor signatures, corresponding to each of the outcomes
-    /// in [`EventAnnouncement::outcomes`]. Each adaptor signature can be decrypted
+    /// in [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
     /// by the [`EventAnnouncement`]'s oracle producing an attestation signature using
     /// [`EventAnnouncement::attestation_secret`].
     pub outcome_tx_signatures: Vec<AdaptorSignature>,

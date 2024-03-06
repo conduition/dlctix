@@ -2,7 +2,7 @@ use secp::{MaybePoint, MaybeScalar, Point, Scalar};
 
 /// An oracle's announcement of a future event.
 #[derive(Debug, Clone)]
-pub struct EventAnnouncment {
+pub struct EventAnnouncement {
     /// The signing oracle's pubkey
     pub oracle_pubkey: Point,
 
@@ -16,7 +16,7 @@ pub struct EventAnnouncment {
     pub expiry: u32,
 }
 
-impl EventAnnouncment {
+impl EventAnnouncement {
     /// Computes the oracle's locking point for the given outcome index.
     pub fn attestation_lock_point(&self, index: usize) -> Option<MaybePoint> {
         let msg = &self.outcome_messages.get(index)?;
