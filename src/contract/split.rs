@@ -1,6 +1,8 @@
 use bitcoin::{absolute::LockTime, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut};
-use musig2::{AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
-use secp::Scalar;
+use musig2::{
+    AggNonce, BatchVerificationRow, CompactSignature, PartialSignature, PubNonce, SecNonce,
+};
+use secp::{Point, Scalar};
 
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
@@ -11,7 +13,7 @@ use crate::{
     spend_info::SplitSpendInfo,
 };
 
-use std::{borrow::Borrow, collections::BTreeMap};
+use std::collections::BTreeMap;
 
 /// Represents the output of building the set of split transactions.
 /// This contains cached data used for constructing further transactions,
@@ -110,7 +112,7 @@ pub(crate) fn build_split_txs(
 ///
 /// The market maker must sign every split script spending path of every
 /// split transaction.
-pub(crate) fn partial_sign_split_txs<'a>(
+pub(crate) fn partial_sign_split_txs(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
@@ -163,7 +165,7 @@ pub(crate) fn partial_sign_split_txs<'a>(
     Ok(partial_signatures)
 }
 
-/// Verify the partial signatures provided by a signer across every split transaction.
+/// Verify the partial signatures provided by a signer across every relevant split transaction.
 ///
 /// Since each split transaction may require multiple signatures (one for each [`WinCondition`]),
 /// the nonces and signatures must be provided in the form of a [`BTreeMap`], which maps
@@ -173,13 +175,13 @@ pub(crate) fn verify_split_tx_partial_signatures(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
-    player: &Player,
+    signer_pubkey: Point,
     pubnonces: &BTreeMap<WinCondition, PubNonce>,
     aggnonces: &BTreeMap<WinCondition, AggNonce>,
     partial_signatures: &BTreeMap<WinCondition, PartialSignature>,
 ) -> Result<(), Error> {
     let win_conditions_to_sign = params
-        .win_conditions_controlled_by_pubkey(player.pubkey)
+        .win_conditions_controlled_by_pubkey(signer_pubkey)
         .ok_or(Error)?;
 
     for win_cond in win_conditions_to_sign {
@@ -205,7 +207,7 @@ pub(crate) fn verify_split_tx_partial_signatures(
             outcome_spend_info.key_agg_ctx_untweaked(),
             partial_sig,
             aggnonce,
-            player.pubkey,
+            signer_pubkey,
             pubnonce,
             sighash,
         )?;
@@ -220,15 +222,14 @@ pub(crate) fn verify_split_tx_partial_signatures(
 /// the nonces and signatures must be provided in the form of a [`BTreeMap`], which maps
 /// a [`WinCondition`] to the appropriate signature for that script spending path.
 /// If any signatures or nonces are missing, this method returns an error.
-pub(crate) fn aggregate_split_tx_signatures<'s, S, P>(
+pub(crate) fn aggregate_split_tx_signatures<S>(
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
     aggnonces: &BTreeMap<WinCondition, AggNonce>,
-    partial_signatures_by_win_cond: &'s BTreeMap<WinCondition, S>,
+    mut partial_signatures_by_win_cond: BTreeMap<WinCondition, S>,
 ) -> Result<BTreeMap<WinCondition, CompactSignature>, Error>
 where
-    &'s S: IntoIterator<Item = P>,
-    P: Borrow<PartialSignature>,
+    S: IntoIterator<Item = PartialSignature>,
 {
     split_build_out
         .split_spend_infos
@@ -240,10 +241,8 @@ where
                 .ok_or(Error)?;
 
             let relevant_partial_sigs = partial_signatures_by_win_cond
-                .get(&win_cond)
-                .ok_or(Error)?
-                .into_iter()
-                .map(|sig| sig.borrow().clone());
+                .remove(&win_cond)
+                .ok_or(Error)?;
 
             let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?;
 
@@ -265,6 +264,58 @@ where
             Ok((win_cond, compact_sig))
         })
         .collect()
+}
+
+/// Verify the set of complete aggregated signatures on the split transactions.
+pub(crate) fn verify_split_tx_aggregated_signatures(
+    params: &ContractParameters,
+    outcome_build_out: &OutcomeTransactionBuildOutput,
+    split_build_out: &SplitTransactionBuildOutput,
+    split_tx_signatures: &BTreeMap<WinCondition, CompactSignature>,
+) -> Result<(), Error> {
+    let all_win_conditions = params.all_win_conditions();
+
+    // One signature per win condition.
+    if split_tx_signatures.len() != all_win_conditions.len() {
+        return Err(Error);
+    }
+
+    let batch: Vec<BatchVerificationRow> = all_win_conditions
+        .into_iter()
+        .map(|win_cond| {
+            let split_tx = split_build_out
+                .split_txs()
+                .get(&win_cond.outcome)
+                .ok_or(Error)?;
+
+            let signature = split_tx_signatures.get(&win_cond).ok_or(Error)?;
+
+            let outcome_spend_info = outcome_build_out
+                .outcome_spend_infos()
+                .get(&win_cond.outcome)
+                .ok_or(Error)?;
+
+            // Expect an untweaked signature by the group, so that the signature
+            // can be used to trigger one of the players' split tapscripts.
+            let winners_joint_pubkey: Point = outcome_spend_info
+                .key_agg_ctx_untweaked()
+                .aggregated_pubkey();
+
+            let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
+
+            let batch_row = BatchVerificationRow::from_signature(
+                winners_joint_pubkey,
+                sighash,
+                signature.lift_nonce()?,
+            );
+
+            Ok(batch_row)
+        })
+        .collect::<Result<_, Error>>()?;
+
+    musig2::verify_batch(&batch)?;
+
+    Ok(())
 }
 
 /// Construct an input to spend a given player's output of the split transaction

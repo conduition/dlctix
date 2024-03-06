@@ -177,26 +177,34 @@ impl ContractParameters {
         Some(sigmap)
     }
 
-    /// Returns an empty sigmap covering every outcome and every win condition.
-    /// This encompasses every possible message whose signatures are needed
-    /// to set up the contract.
-    pub fn full_sigmap(&self) -> SigMap<()> {
-        let mut all_win_conditions = BTreeMap::new();
+    /// Return a full set of all possible win conditions for this DLC.
+    pub fn all_win_conditions(&self) -> BTreeSet<WinCondition> {
+        let mut all_win_conditions = BTreeSet::new();
         for (&outcome, payout_map) in self.outcome_payouts.iter() {
             all_win_conditions.extend(
                 payout_map
                     .keys()
-                    .map(|&winner| (WinCondition { winner, outcome }, ())),
+                    .map(|&winner| WinCondition { winner, outcome }),
             );
         }
+        all_win_conditions
+    }
 
+    /// Returns an empty sigmap covering every outcome and every win condition.
+    /// This encompasses every possible message whose signatures are needed
+    /// to set up the contract.
+    pub fn full_sigmap(&self) -> SigMap<()> {
         SigMap {
             by_outcome: self
                 .outcome_payouts
                 .iter()
                 .map(|(&outcome, _)| (outcome, ()))
                 .collect(),
-            by_win_condition: all_win_conditions,
+            by_win_condition: self
+                .all_win_conditions()
+                .into_iter()
+                .map(|win_cond| (win_cond, ()))
+                .collect(),
         }
     }
 }

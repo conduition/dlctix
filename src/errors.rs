@@ -34,6 +34,12 @@ impl From<musig2::errors::SigningError> for Error {
     }
 }
 
+impl From<secp::errors::InvalidPointBytes> for Error {
+    fn from(_: secp::errors::InvalidPointBytes) -> Self {
+        Error
+    }
+}
+
 impl From<bitcoin::taproot::TaprootBuilderError> for Error {
     fn from(_: bitcoin::taproot::TaprootBuilderError) -> Self {
         Error

@@ -1,13 +1,15 @@
 use bitcoin::{absolute::LockTime, OutPoint, Sequence, Transaction, TxIn, TxOut};
-use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
-use secp::Scalar;
+use musig2::{
+    AdaptorSignature, AggNonce, BatchVerificationRow, CompactSignature, PartialSignature, PubNonce,
+    SecNonce,
+};
+use secp::{Point, Scalar};
 
 use std::collections::BTreeMap;
 
 use crate::{
     contract::{ContractParameters, Outcome},
     errors::Error,
-    parties::Player,
     spend_info::{FundingSpendInfo, OutcomeSpendInfo},
 };
 
@@ -35,15 +37,6 @@ impl OutcomeTransactionBuildOutput {
     /// Return the funding transaction's spending info object.
     pub(crate) fn funding_spend_info(&self) -> &FundingSpendInfo {
         &self.funding_spend_info
-    }
-
-    /// Returns the number of [`musig2`] partial signatures required by each player
-    /// in the DLC (and the market maker).
-    ///
-    /// If the contract has an expiry payout condition, this is simply the number
-    /// of outcomes plus one. Otherwise it is the number of outcomes exactly.
-    pub(crate) fn signatures_required(&self) -> usize {
-        self.outcome_txs.len()
     }
 }
 
@@ -111,10 +104,7 @@ pub(crate) fn build_outcome_txs(
 }
 
 /// Construct a set of partial signatures for the outcome transactions.
-///
-/// The number of signatures and nonces required can be computed by using
-/// checking the length of [`OutcomeTransactionBuildOutput::signatures_required`].
-pub(crate) fn partial_sign_outcome_txs<'a>(
+pub(crate) fn partial_sign_outcome_txs(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
     seckey: Scalar,
@@ -173,28 +163,21 @@ pub(crate) fn partial_sign_outcome_txs<'a>(
 }
 
 /// Verify a player's partial adaptor signatures on the outcome transactions.
-///
-/// The number of signatures and nonces required can be computed by using
-/// checking the length of [`OutcomeTransactionBuildOutput::signatures_required`].
-pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
+pub(crate) fn verify_outcome_tx_partial_signatures(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
-    player: &Player,
-    pubnonces: impl IntoIterator<Item = &'p PubNonce>,
-    aggnonces: impl IntoIterator<Item = &'a AggNonce>,
-    partial_signatures: impl IntoIterator<Item = PartialSignature>,
+    signer_pubkey: Point,
+    pubnonces: &BTreeMap<Outcome, PubNonce>,
+    aggnonces: &BTreeMap<Outcome, AggNonce>,
+    partial_signatures: &BTreeMap<Outcome, PartialSignature>,
 ) -> Result<(), Error> {
     let outcome_txs = &outcome_build_out.outcome_txs;
     let funding_spend_info = &outcome_build_out.funding_spend_info;
 
-    let mut aggnonce_iter = aggnonces.into_iter();
-    let mut pubnonce_iter = pubnonces.into_iter();
-    let mut partial_sig_iter = partial_signatures.into_iter();
-
     for (&outcome, outcome_tx) in outcome_txs {
-        let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
-        let pubnonce = pubnonce_iter.next().ok_or(Error)?; // must provide enough pubnonces
-        let partial_sig = partial_sig_iter.next().ok_or(Error)?; // must provide enough sigs
+        let aggnonce = aggnonces.get(&outcome).ok_or(Error)?; // must provide all aggnonces
+        let pubnonce = pubnonces.get(&outcome).ok_or(Error)?; // must provide all pubnonces
+        let &partial_sig = partial_signatures.get(&outcome).ok_or(Error)?; // must provide all sigs
 
         // Hash the outcome TX.
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
@@ -212,7 +195,7 @@ pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
                     partial_sig,
                     aggnonce,
                     attestation_lock_point,
-                    player.pubkey,
+                    signer_pubkey,
                     pubnonce,
                     sighash,
                 )?;
@@ -223,7 +206,7 @@ pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
                     funding_spend_info.key_agg_ctx(),
                     partial_sig,
                     aggnonce,
-                    player.pubkey,
+                    signer_pubkey,
                     pubnonce,
                     sighash,
                 )?;
@@ -240,7 +223,7 @@ pub(crate) fn verify_outcome_tx_partial_signatures<'p, 'a>(
 pub(crate) struct OutcomeSignatures {
     /// A set of adaptor signatures which can be unlocked by the oracle's attestation
     /// for each outcome.
-    pub(crate) adaptor_signatures: Vec<AdaptorSignature>,
+    pub(crate) outcome_tx_signatures: Vec<AdaptorSignature>,
 
     /// The complete signature on the expiry transaction. This is `None` if the
     /// [`ContractParameters::outcome_payouts`] field does not contain an
@@ -257,11 +240,11 @@ pub(crate) struct OutcomeSignatures {
 /// If all partial signatures are valid, then aggregation succeeds and this
 /// function outputs a set of adaptor signatures which are valid once adapted
 /// with the oracle's attestation.
-pub(crate) fn aggregate_outcome_tx_adaptor_signatures<'a, S>(
+pub(crate) fn aggregate_outcome_tx_adaptor_signatures<S>(
     params: &ContractParameters,
     outcome_build_out: &OutcomeTransactionBuildOutput,
-    aggnonces: impl IntoIterator<Item = &'a AggNonce>,
-    partial_signature_groups: impl IntoIterator<Item = S>,
+    aggnonces: &BTreeMap<Outcome, AggNonce>,
+    mut partial_signature_groups: BTreeMap<Outcome, S>,
 ) -> Result<OutcomeSignatures, Error>
 where
     S: IntoIterator<Item = PartialSignature>,
@@ -269,19 +252,17 @@ where
     let outcome_txs = &outcome_build_out.outcome_txs;
     let funding_spend_info = &outcome_build_out.funding_spend_info;
 
-    let mut aggnonce_iter = aggnonces.into_iter();
-    let mut partial_sig_group_iter = partial_signature_groups.into_iter();
-
     let mut signatures = OutcomeSignatures {
-        adaptor_signatures: Vec::with_capacity(params.event.outcome_messages.len()),
+        outcome_tx_signatures: Vec::with_capacity(params.event.outcome_messages.len()),
         expiry_tx_signature: None,
     };
 
     for (&outcome, outcome_tx) in outcome_txs {
         // must provide a set of sigs for each TX
-        let partial_sigs = partial_sig_group_iter.next().ok_or(Error)?;
+        let partial_sigs = partial_signature_groups.remove(&outcome).ok_or(Error)?;
 
-        let aggnonce = aggnonce_iter.next().ok_or(Error)?; // must provide enough aggnonces
+        // must provide all aggnonces
+        let aggnonce = aggnonces.get(&outcome).ok_or(Error)?;
 
         // Hash the outcome TX.
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
@@ -301,7 +282,7 @@ where
                     sighash,
                 )?;
 
-                signatures.adaptor_signatures.push(adaptor_sig);
+                signatures.outcome_tx_signatures.push(adaptor_sig);
             }
 
             Outcome::Expiry => {
@@ -318,6 +299,66 @@ where
     }
 
     Ok(signatures)
+}
+
+/// Verify the set of complete aggregated signatures on the
+/// outcome and expiry transactions.
+pub(crate) fn verify_outcome_tx_aggregated_signatures(
+    params: &ContractParameters,
+    outcome_build_out: &OutcomeTransactionBuildOutput,
+    outcome_tx_signatures: &[AdaptorSignature],
+    expiry_tx_signature: Option<CompactSignature>,
+) -> Result<(), Error> {
+    let funding_spend_info = &outcome_build_out.funding_spend_info;
+
+    // One signature per outcome TX.
+    if outcome_tx_signatures.len() != params.event.outcome_messages.len() {
+        return Err(Error);
+    }
+
+    let joint_pubkey: Point = funding_spend_info.key_agg_ctx().aggregated_pubkey();
+
+    // Construct a batch for efficient mass signature verification.
+    let batch: Vec<BatchVerificationRow> = outcome_build_out
+        .outcome_txs
+        .iter()
+        .map(|(outcome, outcome_tx)| {
+            let sighash = outcome_build_out
+                .funding_spend_info
+                .sighash_tx_outcome(outcome_tx)?;
+
+            let batch_row = match outcome {
+                // One adaptor signature for each possible attestation outcome.
+                &Outcome::Attestation(outcome_index) => {
+                    let adaptor_point = params
+                        .event
+                        .attestation_lock_point(outcome_index)
+                        .ok_or(Error)?;
+
+                    let &signature = outcome_tx_signatures.get(outcome_index).ok_or(Error)?;
+                    BatchVerificationRow::from_adaptor_signature(
+                        joint_pubkey,
+                        sighash,
+                        signature,
+                        adaptor_point,
+                    )
+                }
+
+                // One signature for the optional expiry transaction.
+                Outcome::Expiry => {
+                    let signature = expiry_tx_signature.ok_or(Error)?.lift_nonce()?;
+                    BatchVerificationRow::from_signature(joint_pubkey, sighash, signature)
+                }
+            };
+
+            Ok(batch_row)
+        })
+        .collect::<Result<_, Error>>()?;
+
+    // Verify all outcome signatures at once.
+    musig2::verify_batch(&batch)?;
+
+    Ok(())
 }
 
 /// Construct an input to spend an outcome transaction for a specific outcome.
