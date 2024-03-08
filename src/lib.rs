@@ -37,10 +37,13 @@ pub struct TicketedDLC {
 
 impl TicketedDLC {
     /// Construct all ticketed DLC transactions and cache precomputed data for later signing.
+    /// Returns an error if the contract parameters are invalid.
     pub fn new(
         params: ContractParameters,
         funding_outpoint: OutPoint,
     ) -> Result<TicketedDLC, Error> {
+        params.validate()?;
+
         let outcome_tx_build = contract::outcome::build_outcome_txs(&params, funding_outpoint)?;
         let split_tx_build = contract::split::build_split_txs(&params, &outcome_tx_build)?;
 

@@ -93,6 +93,59 @@ pub struct WinCondition {
 }
 
 impl ContractParameters {
+    /// Verifies the parameters are in standardized format, checking for
+    /// errors such as duplicate players or zero-value payouts.
+    pub fn validate(&self) -> Result<(), Error> {
+        let uniq_ticket_hashes: BTreeSet<&[u8; 32]> = self
+            .players
+            .iter()
+            .map(|player| &player.ticket_hash)
+            .collect();
+
+        // This would imply the players array contains duplicate ticket hashes.
+        if uniq_ticket_hashes.len() != self.players.len() {
+            return Err(Error);
+        }
+
+        for (outcome, payout_map) in self.outcome_payouts.iter() {
+            // Check for unknown outcomes.
+            if let &Outcome::Attestation(outcome_index) = outcome {
+                if outcome_index >= self.event.outcome_messages.len() {
+                    return Err(Error);
+                }
+            }
+
+            // Check for empty payout map.
+            if payout_map.len() == 0 {
+                return Err(Error);
+            }
+
+            // Check for zero payout weights.
+            for &weight in payout_map.values() {
+                if weight == 0 {
+                    return Err(Error);
+                }
+            }
+        }
+
+        // Must use a non-zero fee rate.
+        if self.fee_rate == FeeRate::ZERO {
+            return Err(Error);
+        }
+
+        // Must use a non-zero locktime delta
+        if self.relative_locktime_block_delta == 0 {
+            return Err(Error);
+        }
+
+        // Must be funded by some fixed non-zero amount.
+        if self.funding_value < Amount::ZERO {
+            return Err(Error);
+        }
+
+        Ok(())
+    }
+
     /// Returns the transaction output which the funding transaction should pay to.
     ///
     /// Avoid overusing this method, as it recomputes the aggregated key every time
