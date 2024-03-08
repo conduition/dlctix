@@ -13,7 +13,7 @@ use secp::{Point, Scalar};
 
 use crate::{
     errors::Error,
-    hashlock::PREIMAGE_SIZE,
+    hashlock::{Preimage, PREIMAGE_SIZE},
     parties::{MarketMaker, Player},
 };
 
@@ -220,6 +220,28 @@ impl OutcomeSpendInfo {
         Ok(sighash)
     }
 
+    /// Compute a witness for a split transaction which spends from the outcome transaction.
+    pub(crate) fn witness_tx_split(
+        &self,
+        signature: &CompactSignature,
+        ticket_preimage: Preimage,
+        winner: &Player,
+    ) -> Result<Witness, Error> {
+        let split_script = self.winner_split_scripts.get(winner).ok_or(Error)?.clone();
+        let control_block = self
+            .spend_info
+            .control_block(&(split_script.clone(), LeafVersion::TapScript))
+            .ok_or(Error)?;
+
+        let mut witness = Witness::new();
+        witness.push(signature.serialize());
+        witness.push(ticket_preimage);
+        witness.push(split_script);
+        witness.push(control_block.serialize());
+
+        Ok(witness)
+    }
+
     /// Compute a witness for a reclaim transaction which spends from the outcome transaction.
     ///
     /// This would only be used if none of the attested DLC outcome winners actually paid for
@@ -227,7 +249,7 @@ impl OutcomeSpendInfo {
     /// without splitting it into multiple payout contracts and recombining the outputs unnecessarily.
     pub(crate) fn witness_tx_reclaim<T: Borrow<TxOut>>(
         &self,
-        split_tx: &Transaction,
+        reclaim_tx: &Transaction,
         input_index: usize,
         prevouts: &Prevouts<T>,
         market_maker_secret_key: Scalar,
@@ -235,7 +257,7 @@ impl OutcomeSpendInfo {
     ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
 
-        let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
+        let sighash = SighashCache::new(reclaim_tx).taproot_script_spend_signature_hash(
             input_index,
             prevouts,
             leaf_hash,

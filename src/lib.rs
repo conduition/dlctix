@@ -17,9 +17,9 @@ use contract::{
 };
 use errors::Error;
 
-use bitcoin::{OutPoint, TxOut};
+use bitcoin::{OutPoint, Transaction, TxOut};
 use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
-use secp::{Point, Scalar};
+use secp::{MaybeScalar, Point, Scalar};
 
 use std::collections::BTreeMap;
 
@@ -413,5 +413,109 @@ fn validate_sigmaps_completeness<T>(
 impl SigningSession<CompleteState> {
     pub fn signatures(&self) -> &ContractSignatures {
         &self.state.signatures
+    }
+
+    /// Return an unsigned outcome transaction.
+    pub fn unsigned_outcome_tx<'a>(&'a self, outcome_index: usize) -> Option<&'a Transaction> {
+        self.dlc
+            .outcome_tx_build
+            .outcome_txs()
+            .get(&Outcome::Attestation(outcome_index))
+    }
+
+    /// Return a signed outcome transaction given the oracle's attestation
+    /// to a specific outcome.
+    pub fn signed_outcome_tx(
+        &self,
+        outcome_index: usize,
+        attestation: impl Into<MaybeScalar>,
+    ) -> Result<Transaction, Error> {
+        let attestation = attestation.into();
+        let locking_point = self
+            .dlc
+            .params
+            .event
+            .attestation_lock_point(outcome_index)
+            .ok_or(Error)?;
+
+        // Invalid attestation.
+        if attestation.base_point_mul() != locking_point {
+            return Err(Error)?;
+        }
+
+        let mut outcome_tx = self
+            .unsigned_outcome_tx(outcome_index)
+            .ok_or(Error)?
+            .clone();
+
+        let adaptor_signature = self
+            .state
+            .signatures
+            .outcome_tx_signatures
+            .get(outcome_index)
+            .ok_or(Error)?;
+
+        let compact_sig: CompactSignature = adaptor_signature.adapt(attestation).ok_or(Error)?;
+
+        outcome_tx.input[0].witness.push(compact_sig.serialize());
+        Ok(outcome_tx)
+    }
+
+    /// Return the signed expiry transaction, if one exists for this contract.
+    pub fn expiry_tx(&self) -> Option<Transaction> {
+        let mut expiry_tx = self
+            .dlc
+            .outcome_tx_build
+            .outcome_txs()
+            .get(&Outcome::Expiry)?
+            .clone();
+
+        let signature: CompactSignature = self.state.signatures.expiry_tx_signature?;
+        expiry_tx.input[0].witness.push(signature.serialize());
+        Some(expiry_tx)
+    }
+
+    /// Return the unsigned split transaction for the given outcome.
+    pub fn unsigned_split_tx<'a>(&'a self, outcome: &Outcome) -> Option<&'a Transaction> {
+        self.dlc.split_tx_build.split_txs().get(outcome)
+    }
+
+    /// Return a signed split transaction, given the ticket preimage for a specific player.
+    pub fn signed_split_tx(
+        &self,
+        win_cond: &WinCondition,
+        ticket_preimage: hashlock::Preimage,
+    ) -> Result<Transaction, Error> {
+        // Verify the preimage will unlock this specific player's split TX
+        // condition.
+        if hashlock::sha256(&ticket_preimage) != win_cond.winner.ticket_hash {
+            return Err(Error)?;
+        }
+
+        let signature = self
+            .state
+            .signatures
+            .split_tx_signatures
+            .get(win_cond)
+            .ok_or(Error)?;
+
+        let outcome_spend_info = self
+            .dlc
+            .outcome_tx_build
+            .outcome_spend_infos()
+            .get(&win_cond.outcome)
+            .ok_or(Error)?;
+
+        let witness =
+            outcome_spend_info.witness_tx_split(signature, ticket_preimage, &win_cond.winner)?;
+
+        let mut split_tx = self
+            .unsigned_split_tx(&win_cond.outcome)
+            .ok_or(Error)?
+            .clone();
+
+        split_tx.input[0].witness = witness;
+
+        Ok(split_tx)
     }
 }
