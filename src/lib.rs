@@ -16,12 +16,16 @@ use contract::{
     split::SplitTransactionBuildOutput,
 };
 use errors::Error;
+use hashlock::{sha256, Preimage};
 
-use bitcoin::{OutPoint, Transaction, TxOut};
+use bitcoin::{sighash::Prevouts, OutPoint, Transaction, TxIn, TxOut};
 use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::{MaybeScalar, Point, Scalar};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 pub use contract::{ContractParameters, Outcome, SigMap, WinCondition};
 pub use oracles::EventAnnouncement;
@@ -555,12 +559,12 @@ impl SignedContract {
     pub fn signed_split_tx(
         &self,
         win_cond: &WinCondition,
-        ticket_preimage: hashlock::Preimage,
+        ticket_preimage: Preimage,
     ) -> Result<Transaction, Error> {
         // Verify the preimage will unlock this specific player's split TX
         // condition.
-        if hashlock::sha256(&ticket_preimage) != win_cond.winner.ticket_hash {
-            return Err(Error)?;
+        if sha256(&ticket_preimage) != win_cond.winner.ticket_hash {
+            return Err(Error);
         }
 
         let signature = self
@@ -588,4 +592,257 @@ impl SignedContract {
 
         Ok(split_tx)
     }
+
+    pub fn outcome_reclaim_tx_input_and_prevout<'a>(
+        &'a self,
+        outcome: &Outcome,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::outcome::outcome_tx_prevout(
+            &self.dlc.outcome_tx_build,
+            outcome,
+            2 * self.dlc.params.relative_locktime_block_delta,
+        )
+    }
+
+    pub fn outcome_sellback_tx_input_and_prevout<'a>(
+        &'a self,
+        outcome: &Outcome,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::outcome::outcome_tx_prevout(&self.dlc.outcome_tx_build, outcome, 0)
+    }
+
+    pub fn split_win_tx_input_and_prevout<'a>(
+        &'a self,
+        win_cond: &WinCondition,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::split::split_tx_prevout(
+            &self.dlc.params,
+            &self.dlc.split_tx_build,
+            win_cond,
+            self.dlc.params.relative_locktime_block_delta,
+        )
+    }
+
+    pub fn split_reclaim_tx_input_and_prevout<'a>(
+        &'a self,
+        win_cond: &WinCondition,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::split::split_tx_prevout(
+            &self.dlc.params,
+            &self.dlc.split_tx_build,
+            win_cond,
+            2 * self.dlc.params.relative_locktime_block_delta,
+        )
+    }
+
+    pub fn split_sellback_tx_input_and_prevout<'a>(
+        &'a self,
+        win_cond: &WinCondition,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::split::split_tx_prevout(&self.dlc.params, &self.dlc.split_tx_build, win_cond, 0)
+    }
+
+    pub fn sign_outcome_reclaim_tx_input<T: Borrow<TxOut>>(
+        &self,
+        outcome: &Outcome,
+        reclaim_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: impl Into<Scalar>,
+    ) -> Result<(), Error> {
+        let market_maker_secret_key = market_maker_secret_key.into();
+        if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (expected_input, expected_prevout) =
+            self.outcome_reclaim_tx_input_and_prevout(outcome)?;
+        check_input_matches_expected(
+            reclaim_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            expected_prevout,
+        )?;
+
+        let outcome_spend_info = self
+            .dlc
+            .outcome_tx_build
+            .outcome_spend_infos()
+            .get(outcome)
+            .ok_or(Error)?;
+
+        let witness = outcome_spend_info.witness_tx_reclaim(
+            reclaim_tx,
+            input_index,
+            prevouts,
+            market_maker_secret_key,
+        )?;
+
+        reclaim_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
+    pub fn sign_split_win_tx_input<T: Borrow<TxOut>>(
+        &self,
+        win_cond: &WinCondition,
+        win_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        ticket_preimage: Preimage,
+        player_secret_key: impl Into<Scalar>,
+    ) -> Result<(), Error> {
+        let player_secret_key = player_secret_key.into();
+        if player_secret_key.base_point_mul() != win_cond.winner.pubkey {
+            return Err(Error);
+        } else if sha256(&ticket_preimage) != win_cond.winner.ticket_hash {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (expected_input, expected_prevout) = self.split_win_tx_input_and_prevout(win_cond)?;
+        check_input_matches_expected(
+            win_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            expected_prevout,
+        )?;
+
+        let split_spend_info = self
+            .dlc
+            .split_tx_build
+            .split_spend_infos()
+            .get(win_cond)
+            .ok_or(Error)?;
+
+        let witness = split_spend_info.witness_tx_win(
+            win_tx,
+            input_index,
+            prevouts,
+            ticket_preimage,
+            player_secret_key,
+        )?;
+
+        win_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
+    pub fn sign_split_reclaim_tx_input<T: Borrow<TxOut>>(
+        &self,
+        win_cond: &WinCondition,
+        reclaim_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: impl Into<Scalar>,
+    ) -> Result<(), Error> {
+        let market_maker_secret_key = market_maker_secret_key.into();
+        if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (expected_input, expected_prevout) =
+            self.split_reclaim_tx_input_and_prevout(win_cond)?;
+        check_input_matches_expected(
+            reclaim_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            expected_prevout,
+        )?;
+
+        let split_spend_info = self
+            .dlc
+            .split_tx_build
+            .split_spend_infos()
+            .get(win_cond)
+            .ok_or(Error)?;
+
+        let witness = split_spend_info.witness_tx_reclaim(
+            reclaim_tx,
+            input_index,
+            prevouts,
+            market_maker_secret_key,
+        )?;
+
+        reclaim_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
+    pub fn sign_split_sellback_tx_input<T: Borrow<TxOut>>(
+        &self,
+        win_cond: &WinCondition,
+        sellback_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        payout_preimage: Preimage,
+        market_maker_secret_key: impl Into<Scalar>,
+    ) -> Result<(), Error> {
+        let market_maker_secret_key = market_maker_secret_key.into();
+        if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (expected_input, expected_prevout) =
+            self.split_sellback_tx_input_and_prevout(win_cond)?;
+        check_input_matches_expected(
+            sellback_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            expected_prevout,
+        )?;
+
+        let split_spend_info = self
+            .dlc
+            .split_tx_build
+            .split_spend_infos()
+            .get(win_cond)
+            .ok_or(Error)?;
+
+        let witness = split_spend_info.witness_tx_sellback(
+            sellback_tx,
+            input_index,
+            prevouts,
+            payout_preimage,
+            market_maker_secret_key,
+        )?;
+
+        sellback_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+}
+
+/// Validate that a given `Transaction` and `Prevouts` set match the expected
+/// input/prevout pair for a given index on that `Transaction`'s inputs.
+fn check_input_matches_expected<T: Borrow<TxOut>>(
+    tx: &Transaction,
+    prevouts: &Prevouts<T>,
+    input_index: usize,
+    expected_input: &TxIn,
+    expected_prevout: &TxOut,
+) -> Result<(), Error> {
+    let input = tx.input.get(input_index).ok_or(Error)?;
+    if input != expected_input {
+        return Err(Error);
+    }
+
+    let prevout = match prevouts {
+        Prevouts::All(all_prevouts) => all_prevouts.get(input_index).ok_or(Error)?.borrow(),
+        Prevouts::One(i, prevout) => {
+            if i != &input_index {
+                return Err(Error)?;
+            }
+            prevout.borrow()
+        }
+    };
+
+    if prevout != expected_prevout {
+        return Err(Error);
+    }
+
+    Ok(())
 }
