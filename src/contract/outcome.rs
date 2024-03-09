@@ -5,7 +5,7 @@ use musig2::{
 };
 use secp::{Point, Scalar};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     contract::{ContractParameters, Outcome},
@@ -223,7 +223,7 @@ pub(crate) fn verify_outcome_tx_partial_signatures(
 pub(crate) struct OutcomeSignatures {
     /// A set of adaptor signatures which can be unlocked by the oracle's attestation
     /// for each outcome.
-    pub(crate) outcome_tx_signatures: Vec<AdaptorSignature>,
+    pub(crate) outcome_tx_signatures: BTreeMap<usize, AdaptorSignature>,
 
     /// The complete signature on the expiry transaction. This is `None` if the
     /// [`ContractParameters::outcome_payouts`] field does not contain an
@@ -253,7 +253,7 @@ where
     let funding_spend_info = &outcome_build_out.funding_spend_info;
 
     let mut signatures = OutcomeSignatures {
-        outcome_tx_signatures: Vec::with_capacity(params.event.outcome_messages.len()),
+        outcome_tx_signatures: BTreeMap::new(),
         expiry_tx_signature: None,
     };
 
@@ -282,7 +282,9 @@ where
                     sighash,
                 )?;
 
-                signatures.outcome_tx_signatures.push(adaptor_sig);
+                signatures
+                    .outcome_tx_signatures
+                    .insert(outcome_index, adaptor_sig);
             }
 
             Outcome::Expiry => {
@@ -305,37 +307,43 @@ where
 /// outcome and expiry transactions.
 pub(crate) fn verify_outcome_tx_aggregated_signatures(
     params: &ContractParameters,
+    our_pubkey: Point,
     outcome_build_out: &OutcomeTransactionBuildOutput,
-    outcome_tx_signatures: &[AdaptorSignature],
+    outcome_tx_signatures: &BTreeMap<usize, AdaptorSignature>,
     expiry_tx_signature: Option<CompactSignature>,
 ) -> Result<(), Error> {
     let funding_spend_info = &outcome_build_out.funding_spend_info;
 
-    // One signature per outcome TX.
-    if outcome_tx_signatures.len() != params.event.outcome_messages.len() {
-        return Err(Error);
-    }
-
     let joint_pubkey: Point = funding_spend_info.key_agg_ctx().aggregated_pubkey();
 
+    // We only need to verify signatures on outcomes where our pubkey might
+    // win something.
+    let relevant_outcomes: BTreeSet<Outcome> = params
+        .win_conditions_controlled_by_pubkey(our_pubkey)
+        .ok_or(Error)?
+        .into_iter()
+        .map(|win_cond| win_cond.outcome)
+        .collect();
+
     // Construct a batch for efficient mass signature verification.
-    let batch: Vec<BatchVerificationRow> = outcome_build_out
-        .outcome_txs
-        .iter()
-        .map(|(outcome, outcome_tx)| {
+    let batch: Vec<BatchVerificationRow> = relevant_outcomes
+        .into_iter()
+        .map(|outcome| {
+            let outcome_tx = outcome_build_out.outcome_txs.get(&outcome).ok_or(Error)?;
+
             let sighash = outcome_build_out
                 .funding_spend_info
                 .sighash_tx_outcome(outcome_tx)?;
 
             let batch_row = match outcome {
                 // One adaptor signature for each possible attestation outcome.
-                &Outcome::Attestation(outcome_index) => {
+                Outcome::Attestation(outcome_index) => {
                     let adaptor_point = params
                         .event
                         .attestation_lock_point(outcome_index)
                         .ok_or(Error)?;
 
-                    let &signature = outcome_tx_signatures.get(outcome_index).ok_or(Error)?;
+                    let &signature = outcome_tx_signatures.get(&outcome_index).ok_or(Error)?;
                     BatchVerificationRow::from_adaptor_signature(
                         joint_pubkey,
                         sighash,

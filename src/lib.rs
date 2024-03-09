@@ -21,7 +21,7 @@ use bitcoin::{OutPoint, Transaction, TxOut};
 use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::{MaybeScalar, Point, Scalar};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use contract::{ContractParameters, Outcome, SigMap, WinCondition};
 pub use oracles::EventAnnouncement;
@@ -350,6 +350,7 @@ impl SigningSession<PartialSignatureSharingRound> {
     ) -> Result<(), Error> {
         contract::outcome::verify_outcome_tx_aggregated_signatures(
             &self.dlc.params,
+            self.our_public_key,
             &self.dlc.outcome_tx_build,
             &signatures.outcome_tx_signatures,
             signatures.expiry_tx_signature,
@@ -357,6 +358,7 @@ impl SigningSession<PartialSignatureSharingRound> {
 
         contract::split::verify_split_tx_aggregated_signatures(
             &self.dlc.params,
+            self.our_public_key,
             &self.dlc.outcome_tx_build,
             &self.dlc.split_tx_build,
             &signatures.split_tx_signatures,
@@ -395,17 +397,26 @@ fn validate_sigmaps_completeness<T>(
     Ok(())
 }
 
+/// A set of signatures produced by running a cooperative [`SigningSession`] on a
+/// [`TicketedDLC`]. These are only the signatures needed for enforcing outcomes
+/// which multiple members of the group must agree on.
+///
+/// Players do not need a fully copy of every outcome and split TX signature.
+/// Only some players care about certain outcomes, and a player only enforce one
+/// specific split TX unlock condition - the one corresponding to their ticket
+/// hash. We can save bandwidth and
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractSignatures {
     /// A complete signature on the expiry transaction. Set to `None` if the
     /// [`ContractParameters::outcome_payouts`] field did not contain an
     /// [`Outcome::Expiry`] payout condition.
     pub expiry_tx_signature: Option<CompactSignature>,
-    /// An ordered vector of adaptor signatures, corresponding to each of the outcomes
-    /// in [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
+    /// A mapping of outcome attestation indexes to adaptor signatures on outcome transactions.
+    /// The index of each entry corresponds to the outcomes in
+    /// [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
     /// by the [`EventAnnouncement`]'s oracle producing an attestation signature using
     /// [`EventAnnouncement::attestation_secret`].
-    pub outcome_tx_signatures: Vec<AdaptorSignature>,
+    pub outcome_tx_signatures: BTreeMap<usize, AdaptorSignature>,
     /// A set of signatures needed for broadcasting split transactions. Each signature
     /// is specific to a certain combination of player and outcome.
     pub split_tx_signatures: BTreeMap<WinCondition, CompactSignature>,
@@ -419,9 +430,59 @@ pub struct SignedContract {
 }
 
 impl SignedContract {
-    pub fn signatures(&self) -> &ContractSignatures {
+    /// Returns the complete set of signatures for all outcomes and win conditions.
+    pub fn all_signatures(&self) -> &ContractSignatures {
         &self.signatures
     }
+
+    /// Produce a pruned set of signatures, relevant to the specific signer's pubkey.
+    /// If the pubkey belongs to the market maker, this simply returns a clone of the
+    /// full set of signatures, since the market maker is involved in every multisignature
+    /// spending condition.
+    pub fn pruned_signatures(&self, player_pubkey: Point) -> Option<ContractSignatures> {
+        if player_pubkey == self.dlc.params.market_maker.pubkey {
+            return Some(self.signatures.clone());
+        }
+
+        let relevant_win_conditions = self
+            .dlc
+            .params
+            .win_conditions_controlled_by_pubkey(player_pubkey)?;
+
+        let relevant_outcomes: BTreeSet<Outcome> = relevant_win_conditions
+            .iter()
+            .map(|win_cond| win_cond.outcome)
+            .collect();
+
+        let pruned_sigs = ContractSignatures {
+            expiry_tx_signature: self
+                .signatures
+                .expiry_tx_signature
+                .filter(|_| relevant_outcomes.contains(&Outcome::Expiry)),
+
+            outcome_tx_signatures: self
+                .signatures
+                .outcome_tx_signatures
+                .iter()
+                .filter(|(&outcome_index, _)| {
+                    relevant_outcomes.contains(&Outcome::Attestation(outcome_index))
+                })
+                .map(|(&outcome_index, &sig)| (outcome_index, sig))
+                .collect(),
+
+            split_tx_signatures: self
+                .signatures
+                .split_tx_signatures
+                .iter()
+                .filter(|(win_cond, _)| relevant_win_conditions.contains(win_cond))
+                .map(|(&win_cond, &sig)| (win_cond, sig))
+                .collect(),
+        };
+
+        Some(pruned_sigs)
+    }
+
+    /// Returns the [`TicketedDLC`] which has been signed.
     pub fn dlc(&self) -> &TicketedDLC {
         &self.dlc
     }
@@ -462,7 +523,7 @@ impl SignedContract {
         let adaptor_signature = self
             .signatures
             .outcome_tx_signatures
-            .get(outcome_index)
+            .get(&outcome_index)
             .ok_or(Error)?;
 
         let compact_sig: CompactSignature = adaptor_signature.adapt(attestation).ok_or(Error)?;

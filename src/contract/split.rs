@@ -13,7 +13,7 @@ use crate::{
     spend_info::SplitSpendInfo,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Represents the output of building the set of split transactions.
 /// This contains cached data used for constructing further transactions,
@@ -274,18 +274,18 @@ where
 /// Verify the set of complete aggregated signatures on the split transactions.
 pub(crate) fn verify_split_tx_aggregated_signatures(
     params: &ContractParameters,
+    our_pubkey: Point,
     outcome_build_out: &OutcomeTransactionBuildOutput,
     split_build_out: &SplitTransactionBuildOutput,
     split_tx_signatures: &BTreeMap<WinCondition, CompactSignature>,
 ) -> Result<(), Error> {
-    let all_win_conditions = params.all_win_conditions();
+    // We only need to verify signatures on win conditions where our pubkey might
+    // win something.
+    let relevant_win_conditions: BTreeSet<WinCondition> = params
+        .win_conditions_controlled_by_pubkey(our_pubkey)
+        .ok_or(Error)?;
 
-    // One signature per win condition.
-    if split_tx_signatures.len() != all_win_conditions.len() {
-        return Err(Error);
-    }
-
-    let batch: Vec<BatchVerificationRow> = all_win_conditions
+    let batch: Vec<BatchVerificationRow> = relevant_win_conditions
         .into_iter()
         .map(|win_cond| {
             let split_tx = split_build_out
