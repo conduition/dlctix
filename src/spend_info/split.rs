@@ -219,7 +219,6 @@ impl SplitSpendInfo {
         prevouts: &Prevouts<T>,
         ticket_preimage: Preimage,
         player_secret_key: Scalar,
-        nonce_seed: impl Into<musig2::NonceSeed>,
     ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.win_script, LeafVersion::TapScript);
 
@@ -230,7 +229,8 @@ impl SplitSpendInfo {
             TapSighashType::Default,
         )?;
 
-        let signature: CompactSignature = musig2::sign_solo(player_secret_key, sighash, nonce_seed);
+        let signature: CompactSignature =
+            musig2::deterministic::sign_solo(player_secret_key, sighash);
 
         let win_control_block = self
             .spend_info
@@ -256,7 +256,6 @@ impl SplitSpendInfo {
         input_index: usize,
         prevouts: &Prevouts<T>,
         market_maker_secret_key: Scalar,
-        nonce_seed: impl Into<musig2::NonceSeed>,
     ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
 
@@ -267,7 +266,7 @@ impl SplitSpendInfo {
             TapSighashType::Default,
         )?;
         let signature: CompactSignature =
-            musig2::sign_solo(market_maker_secret_key, sighash, nonce_seed);
+            musig2::deterministic::sign_solo(market_maker_secret_key, sighash);
 
         let reclaim_control_block = self
             .spend_info
@@ -293,7 +292,6 @@ impl SplitSpendInfo {
         prevouts: &Prevouts<T>,
         payout_preimage: Preimage,
         market_maker_secret_key: Scalar,
-        nonce_seed: impl Into<musig2::NonceSeed>,
     ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.sellback_script, LeafVersion::TapScript);
 
@@ -305,7 +303,7 @@ impl SplitSpendInfo {
         )?;
 
         let signature: CompactSignature =
-            musig2::sign_solo(market_maker_secret_key, sighash, nonce_seed);
+            musig2::deterministic::sign_solo(market_maker_secret_key, sighash);
 
         let sellback_control_block = self
             .spend_info

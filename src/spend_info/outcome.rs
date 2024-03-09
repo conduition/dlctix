@@ -253,7 +253,6 @@ impl OutcomeSpendInfo {
         input_index: usize,
         prevouts: &Prevouts<T>,
         market_maker_secret_key: Scalar,
-        nonce_seed: impl Into<musig2::NonceSeed>,
     ) -> Result<Witness, Error> {
         let leaf_hash = TapLeafHash::from_script(&self.reclaim_script, LeafVersion::TapScript);
 
@@ -265,7 +264,7 @@ impl OutcomeSpendInfo {
         )?;
 
         let signature: CompactSignature =
-            musig2::sign_solo(market_maker_secret_key, sighash, nonce_seed);
+            musig2::deterministic::sign_solo(market_maker_secret_key, sighash);
 
         let reclaim_control_block = self
             .spend_info
