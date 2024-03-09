@@ -120,9 +120,14 @@ impl ContractParameters {
                 return Err(Error);
             }
 
-            // Check for zero payout weights.
-            for &weight in payout_map.values() {
+            for (player, &weight) in payout_map.iter() {
+                // Check for zero payout weights.
                 if weight == 0 {
+                    return Err(Error);
+                }
+
+                // Check for unregistered players.
+                if !self.players.contains(player) {
                     return Err(Error);
                 }
             }
