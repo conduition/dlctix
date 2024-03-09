@@ -31,6 +31,7 @@ pub use parties::{MarketMaker, Player};
 /// all necessary data for a ticketed DLC.
 pub struct TicketedDLC {
     params: ContractParameters,
+    funding_outpoint: OutPoint,
     outcome_tx_build: OutcomeTransactionBuildOutput,
     split_tx_build: SplitTransactionBuildOutput,
 }
@@ -49,10 +50,21 @@ impl TicketedDLC {
 
         let txs = TicketedDLC {
             params,
+            funding_outpoint,
             outcome_tx_build,
             split_tx_build,
         };
         Ok(txs)
+    }
+
+    /// Returns the contract parameters used to construct the DLC.
+    pub fn params(&self) -> &ContractParameters {
+        &self.params
+    }
+
+    /// Returns the funding outpoint used to construct the DLC.
+    pub fn funding_outpoint(&self) -> OutPoint {
+        self.funding_outpoint
     }
 
     /// Return the expected transaction output which the market maker should include
@@ -89,32 +101,8 @@ pub struct PartialSignatureSharingRound {
     our_partial_signatures: SigMap<PartialSignature>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractSignatures {
-    /// A complete signature on the expiry transaction. Set to `None` if the
-    /// [`ContractParameters::outcome_payouts`] field did not contain an
-    /// [`Outcome::Expiry`] payout condition.
-    pub expiry_tx_signature: Option<CompactSignature>,
-    /// An ordered vector of adaptor signatures, corresponding to each of the outcomes
-    /// in [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
-    /// by the [`EventAnnouncement`]'s oracle producing an attestation signature using
-    /// [`EventAnnouncement::attestation_secret`].
-    pub outcome_tx_signatures: Vec<AdaptorSignature>,
-    /// A set of signatures needed for broadcasting split transactions. Each signature
-    /// is specific to a certain combination of player and outcome.
-    pub split_tx_signatures: BTreeMap<WinCondition, CompactSignature>,
-}
-
-/// A [`SigningSessionState`] used for a complete signing session once
-/// all signatures on the [`TicketedDLC`] have been aggregated and verified
-/// successfully.
-pub struct CompleteState {
-    signatures: ContractSignatures,
-}
-
 impl SigningSessionState for NonceSharingRound {}
 impl SigningSessionState for PartialSignatureSharingRound {}
-impl SigningSessionState for CompleteState {}
 
 /// This is a state machine to manage signing the various transactions in a [`TicketedDLC`].
 pub struct SigningSession<S: SigningSessionState> {
@@ -291,7 +279,7 @@ impl SigningSession<PartialSignatureSharingRound> {
     pub fn aggregate_all_signatures(
         self,
         mut received_signatures: BTreeMap<Point, SigMap<PartialSignature>>,
-    ) -> Result<SigningSession<CompleteState>, Error> {
+    ) -> Result<SignedContract, Error> {
         // Insert our own signatures so that callers don't need to inject them manually.
         received_signatures.insert(self.our_public_key, self.state.our_partial_signatures);
 
@@ -341,19 +329,16 @@ impl SigningSession<PartialSignatureSharingRound> {
         )?;
 
         // Signing complete! Just have to send `signatures` to our peers.
-        let complete_session = SigningSession {
+        let signed_contract = SignedContract {
             dlc: self.dlc,
-            our_public_key: self.our_public_key,
-            state: CompleteState {
-                signatures: ContractSignatures {
-                    expiry_tx_signature,
-                    outcome_tx_signatures,
-                    split_tx_signatures,
-                },
+            signatures: ContractSignatures {
+                expiry_tx_signature,
+                outcome_tx_signatures,
+                split_tx_signatures,
             },
         };
 
-        Ok(complete_session)
+        Ok(signed_contract)
     }
 
     /// Verifies the complete set of contract signatures were aggregated correctly by a peer.
@@ -410,9 +395,35 @@ fn validate_sigmaps_completeness<T>(
     Ok(())
 }
 
-impl SigningSession<CompleteState> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractSignatures {
+    /// A complete signature on the expiry transaction. Set to `None` if the
+    /// [`ContractParameters::outcome_payouts`] field did not contain an
+    /// [`Outcome::Expiry`] payout condition.
+    pub expiry_tx_signature: Option<CompactSignature>,
+    /// An ordered vector of adaptor signatures, corresponding to each of the outcomes
+    /// in [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
+    /// by the [`EventAnnouncement`]'s oracle producing an attestation signature using
+    /// [`EventAnnouncement::attestation_secret`].
+    pub outcome_tx_signatures: Vec<AdaptorSignature>,
+    /// A set of signatures needed for broadcasting split transactions. Each signature
+    /// is specific to a certain combination of player and outcome.
+    pub split_tx_signatures: BTreeMap<WinCondition, CompactSignature>,
+}
+
+/// Represents a fully signed and enforceable [`TicketedDLC`], created
+/// by running a [`SigningSession`].
+pub struct SignedContract {
+    signatures: ContractSignatures,
+    dlc: TicketedDLC,
+}
+
+impl SignedContract {
     pub fn signatures(&self) -> &ContractSignatures {
-        &self.state.signatures
+        &self.signatures
+    }
+    pub fn dlc(&self) -> &TicketedDLC {
+        &self.dlc
     }
 
     /// Return an unsigned outcome transaction.
@@ -449,7 +460,6 @@ impl SigningSession<CompleteState> {
             .clone();
 
         let adaptor_signature = self
-            .state
             .signatures
             .outcome_tx_signatures
             .get(outcome_index)
@@ -470,7 +480,7 @@ impl SigningSession<CompleteState> {
             .get(&Outcome::Expiry)?
             .clone();
 
-        let signature: CompactSignature = self.state.signatures.expiry_tx_signature?;
+        let signature: CompactSignature = self.signatures.expiry_tx_signature?;
         expiry_tx.input[0].witness.push(signature.serialize());
         Some(expiry_tx)
     }
@@ -493,7 +503,6 @@ impl SigningSession<CompleteState> {
         }
 
         let signature = self
-            .state
             .signatures
             .split_tx_signatures
             .get(win_cond)

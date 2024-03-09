@@ -29,6 +29,11 @@ impl SplitTransactionBuildOutput {
     pub(crate) fn split_txs(&self) -> &BTreeMap<Outcome, Transaction> {
         &self.split_txs
     }
+
+    /// Return the set of split spend info objects mapped by win condition.
+    pub(crate) fn split_spend_infos(&self) -> &BTreeMap<WinCondition, SplitSpendInfo> {
+        &self.split_spend_infos
+    }
 }
 
 /// Build the set of split transactions which splits an outcome TX into per-player
