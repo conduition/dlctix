@@ -3,7 +3,7 @@ use secp::Point;
 /// The agent who provides the on-chain capital to facilitate the ticketed DLC.
 /// Could be one of the players in the DLC, or could be a neutral 3rd party
 /// who wishes to profit by leveraging their capital.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MarketMaker {
     pub pubkey: Point,
 }
