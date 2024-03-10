@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// index in the sorted set of players.
 pub type PlayerIndex = usize;
 
-/// A type alias for clarity. Players in the DLC are often referred to by their
-/// index in the sorted set of players.
+/// A type alias for clarity. DLC outcomes are sometimes referred to by their
+/// index in the set of possible outcome messages.
 pub type OutcomeIndex = usize;
 
 /// Represents a mapping of player to payout weight for a given outcome.
