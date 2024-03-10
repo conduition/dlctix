@@ -618,13 +618,6 @@ impl SignedContract {
         )
     }
 
-    pub fn outcome_sellback_tx_input_and_prevout<'a>(
-        &'a self,
-        outcome: &Outcome,
-    ) -> Result<(TxIn, &'a TxOut), Error> {
-        contract::outcome::outcome_tx_prevout(&self.dlc.outcome_tx_build, outcome, 0)
-    }
-
     pub fn split_win_tx_input_and_prevout<'a>(
         &'a self,
         win_cond: &WinCondition,
