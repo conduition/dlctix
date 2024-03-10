@@ -861,8 +861,12 @@ impl SignedContract {
         }
 
         // Confirm we're signing the correct input
-        let (expected_input, expected_prevout) =
+        let (mut expected_input, expected_prevout) =
             self.split_sellback_tx_input_and_prevout(win_cond)?;
+
+        // The caller can use whatever sequence they want.
+        expected_input.sequence = sellback_tx.input.get(input_index).ok_or(Error)?.sequence;
+
         check_input_matches_expected(
             sellback_tx,
             prevouts,
