@@ -96,9 +96,7 @@ pub struct NonceSharingRound {
 }
 
 /// A [`SigningSessionState`] state for the second signature-sharing
-/// round of communication. This assumes a mesh topology between
-/// signers, where every signer sends their partial signatures to
-/// everyone else.
+/// round of communication.
 pub struct PartialSignatureSharingRound {
     received_nonces: BTreeMap<Point, SigMap<PubNonce>>,
     aggregated_nonces: SigMap<AggNonce>,
@@ -443,6 +441,9 @@ impl SignedContract {
     /// If the pubkey belongs to the market maker, this simply returns a clone of the
     /// full set of signatures, since the market maker is involved in every multisignature
     /// spending condition.
+    ///
+    /// This method is used to reduce bandwidth requirements when transmitting aggregated
+    /// signatures to players.
     pub fn pruned_signatures(&self, player_pubkey: Point) -> Option<ContractSignatures> {
         if player_pubkey == self.dlc.params.market_maker.pubkey {
             return Some(self.signatures.clone());
