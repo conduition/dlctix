@@ -27,7 +27,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-pub use contract::{ContractParameters, Outcome, SigMap, WinCondition};
+pub use contract::{ContractParameters, Outcome, PlayerIndex, SigMap, WinCondition};
 pub use oracles::EventAnnouncement;
 pub use parties::{MarketMaker, Player};
 
@@ -561,9 +561,17 @@ impl SignedContract {
         win_cond: &WinCondition,
         ticket_preimage: Preimage,
     ) -> Result<Transaction, Error> {
+        let winner = self
+            .dlc
+            .params
+            .sorted_players()
+            .get(win_cond.player_index)
+            .cloned()
+            .ok_or(Error)?;
+
         // Verify the preimage will unlock this specific player's split TX
         // condition.
-        if sha256(&ticket_preimage) != win_cond.winner.ticket_hash {
+        if sha256(&ticket_preimage) != winner.ticket_hash {
             return Err(Error);
         }
 
@@ -580,8 +588,11 @@ impl SignedContract {
             .get(&win_cond.outcome)
             .ok_or(Error)?;
 
-        let witness =
-            outcome_spend_info.witness_tx_split(signature, ticket_preimage, &win_cond.winner)?;
+        let witness = outcome_spend_info.witness_tx_split(
+            signature,
+            ticket_preimage,
+            &win_cond.player_index,
+        )?;
 
         let mut split_tx = self
             .unsigned_split_tx(&win_cond.outcome)
@@ -693,10 +704,18 @@ impl SignedContract {
         ticket_preimage: Preimage,
         player_secret_key: impl Into<Scalar>,
     ) -> Result<(), Error> {
+        let winner = self
+            .dlc
+            .params
+            .sorted_players()
+            .get(win_cond.player_index)
+            .cloned()
+            .ok_or(Error)?;
+
         let player_secret_key = player_secret_key.into();
-        if player_secret_key.base_point_mul() != win_cond.winner.pubkey {
+        if player_secret_key.base_point_mul() != winner.pubkey {
             return Err(Error);
-        } else if sha256(&ticket_preimage) != win_cond.winner.ticket_hash {
+        } else if sha256(&ticket_preimage) != winner.ticket_hash {
             return Err(Error);
         }
 

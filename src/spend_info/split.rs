@@ -32,7 +32,6 @@ pub(crate) struct SplitSpendInfo {
     tweaked_ctx: KeyAggContext,
     payout_value: Amount,
     spend_info: TaprootSpendInfo,
-    winner: Player,
     win_script: ScriptBuf,
     reclaim_script: ScriptBuf,
     sellback_script: ScriptBuf,
@@ -40,7 +39,7 @@ pub(crate) struct SplitSpendInfo {
 
 impl SplitSpendInfo {
     pub(crate) fn new(
-        winner: Player,
+        winner: &Player,
         market_maker: &MarketMaker,
         payout_value: Amount,
         block_delta: u16,
@@ -120,7 +119,6 @@ impl SplitSpendInfo {
             tweaked_ctx,
             payout_value,
             spend_info: tr_spend_info,
-            winner,
             win_script,
             reclaim_script,
             sellback_script,

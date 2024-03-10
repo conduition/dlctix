@@ -12,6 +12,7 @@ use musig2::{CompactSignature, KeyAggContext};
 use secp::{Point, Scalar};
 
 use crate::{
+    contract::PlayerIndex,
     errors::Error,
     hashlock::{Preimage, PREIMAGE_SIZE},
     parties::{MarketMaker, Player},
@@ -40,29 +41,37 @@ pub(crate) struct OutcomeSpendInfo {
     tweaked_ctx: KeyAggContext,
     outcome_value: Amount,
     spend_info: TaprootSpendInfo,
-    winner_split_scripts: BTreeMap<Player, ScriptBuf>,
+    winner_split_scripts: BTreeMap<PlayerIndex, ScriptBuf>,
     reclaim_script: ScriptBuf,
 }
 
 impl OutcomeSpendInfo {
-    pub(crate) fn new<W: IntoIterator<Item = Player>>(
-        winners: W,
+    pub(crate) fn new(
+        all_players: &[impl Borrow<Player>],
+        winner_indexes: impl IntoIterator<Item = PlayerIndex>,
         market_maker: &MarketMaker,
         outcome_value: Amount,
         block_delta: u16,
     ) -> Result<Self, Error> {
-        let winners: Vec<Player> = winners.into_iter().collect();
+        let winners: BTreeMap<PlayerIndex, &Player> = winner_indexes
+            .into_iter()
+            .map(|i| {
+                let player = all_players.get(i).ok_or(Error)?;
+                Ok((i, player.borrow()))
+            })
+            .collect::<Result<_, Error>>()?;
+
         let mut pubkeys: Vec<Point> = [market_maker.pubkey]
             .into_iter()
-            .chain(winners.iter().map(|w| w.pubkey))
+            .chain(winners.values().map(|w| w.pubkey))
             .collect();
         pubkeys.sort();
         let untweaked_ctx = KeyAggContext::new(pubkeys)?;
         let joint_outcome_pubkey: Point = untweaked_ctx.aggregated_pubkey();
 
-        let winner_split_scripts: BTreeMap<Player, ScriptBuf> = winners
-            .iter()
-            .map(|&winner| {
+        let winner_split_scripts: BTreeMap<PlayerIndex, ScriptBuf> = winners
+            .into_iter()
+            .map(|(player_index, winner)| {
                 // The winner split script, used by winning players to spend
                 // the outcome transaction using the split transaction.
                 //
@@ -79,7 +88,7 @@ impl OutcomeSpendInfo {
                     // Sequence number is enforced by multisig key: split TX is pre-signed.
                     .into_script();
 
-                (winner, script)
+                (player_index, script)
             })
             .collect();
 
@@ -202,13 +211,13 @@ impl OutcomeSpendInfo {
     pub(crate) fn sighash_tx_split(
         &self,
         split_tx: &Transaction,
-        winner: &Player,
+        player_index: &PlayerIndex,
     ) -> Result<TapSighash, Error> {
         let outcome_prevouts = [TxOut {
             script_pubkey: self.script_pubkey(),
             value: self.outcome_value,
         }];
-        let split_script = self.winner_split_scripts.get(winner).ok_or(Error)?;
+        let split_script = self.winner_split_scripts.get(player_index).ok_or(Error)?;
         let leaf_hash = TapLeafHash::from_script(split_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
@@ -225,9 +234,13 @@ impl OutcomeSpendInfo {
         &self,
         signature: &CompactSignature,
         ticket_preimage: Preimage,
-        winner: &Player,
+        player_index: &PlayerIndex,
     ) -> Result<Witness, Error> {
-        let split_script = self.winner_split_scripts.get(winner).ok_or(Error)?.clone();
+        let split_script = self
+            .winner_split_scripts
+            .get(player_index)
+            .ok_or(Error)?
+            .clone();
         let control_block = self
             .spend_info
             .control_block(&(split_script.clone(), LeafVersion::TapScript))

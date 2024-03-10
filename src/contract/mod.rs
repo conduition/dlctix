@@ -15,6 +15,10 @@ use crate::{
 
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A type alias for clarity. Players in the DLC are often referred to by their
+/// index in the sorted set of players.
+pub type PlayerIndex = usize;
+
 /// Represents a mapping of player to payout weight for a given outcome.
 ///
 /// A player's payout under an outcome is proportional to the size of their payout weight
@@ -26,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 ///
 /// Players who should not receive a payout from an outcome MUST NOT be given an entry
 /// in a `PayoutWeights` map.
-pub type PayoutWeights = BTreeMap<Player, u64>;
+pub type PayoutWeights = BTreeMap<PlayerIndex, u64>;
 
 /// Represents the parameters which all players and the market maker must agree on
 /// to construct a ticketed DLC.
@@ -89,7 +93,7 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct WinCondition {
     pub outcome: Outcome,
-    pub winner: Player,
+    pub player_index: PlayerIndex,
 }
 
 impl ContractParameters {
@@ -120,14 +124,14 @@ impl ContractParameters {
                 return Err(Error);
             }
 
-            for (player, &weight) in payout_map.iter() {
+            for (&player_index, &weight) in payout_map.iter() {
                 // Check for zero payout weights.
                 if weight == 0 {
                     return Err(Error);
                 }
 
-                // Check for unregistered players.
-                if !self.players.contains(player) {
+                // Check for out-of-bounds player indexes.
+                if player_index >= self.players.len() {
                     return Err(Error);
                 }
             }
@@ -151,6 +155,12 @@ impl ContractParameters {
         Ok(())
     }
 
+    /// Return a sorted vector of players. Each player's index in this vector
+    /// should be used as an identifier for the DLC.
+    pub fn sorted_players<'a>(&'a self) -> Vec<&'a Player> {
+        self.players.iter().collect()
+    }
+
     /// Returns the transaction output which the funding transaction should pay to.
     ///
     /// Avoid overusing this method, as it recomputes the aggregated key every time
@@ -169,14 +179,21 @@ impl ContractParameters {
         Ok(outcome_value)
     }
 
-    /// Returns the set of players which this pubkey can sign for.
+    /// Returns the set of player indexes which this pubkey can sign for.
     ///
     /// This might contain multiple players if the same key joined the DLC
     /// with different ticket/payout hashes.
-    pub fn players_controlled_by_pubkey<'a>(&'a self, pubkey: Point) -> BTreeSet<&'a Player> {
+    pub fn players_controlled_by_pubkey(&self, pubkey: Point) -> BTreeSet<PlayerIndex> {
         self.players
             .iter()
-            .filter(|player| player.pubkey == pubkey)
+            .enumerate()
+            .filter_map(|(i, player)| {
+                if player.pubkey == pubkey {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -211,12 +228,16 @@ impl ContractParameters {
         for (&outcome, payout_map) in self.outcome_payouts.iter() {
             // We want to sign the split TX for any win-conditions whose player is controlled
             // by `pubkey`. If we're the market maker, we sign every win condition.
-            win_conditions_to_sign.extend(
-                payout_map
-                    .keys()
-                    .filter(|winner| is_market_maker || controlling_players.contains(winner))
-                    .map(|&winner| WinCondition { winner, outcome }),
-            );
+            win_conditions_to_sign.extend(payout_map.keys().filter_map(|player_index| {
+                if is_market_maker || controlling_players.contains(player_index) {
+                    Some(WinCondition {
+                        player_index: *player_index,
+                        outcome,
+                    })
+                } else {
+                    None
+                }
+            }));
         }
 
         Some(win_conditions_to_sign)
@@ -239,11 +260,10 @@ impl ContractParameters {
     pub fn all_win_conditions(&self) -> BTreeSet<WinCondition> {
         let mut all_win_conditions = BTreeSet::new();
         for (&outcome, payout_map) in self.outcome_payouts.iter() {
-            all_win_conditions.extend(
-                payout_map
-                    .keys()
-                    .map(|&winner| WinCondition { winner, outcome }),
-            );
+            all_win_conditions.extend(payout_map.keys().map(|&player_index| WinCondition {
+                player_index,
+                outcome,
+            }));
         }
         all_win_conditions
     }

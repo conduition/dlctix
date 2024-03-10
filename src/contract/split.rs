@@ -6,10 +6,9 @@ use secp::{Point, Scalar};
 
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
-    contract::{self, fees, outcome::OutcomeTransactionBuildOutput},
+    contract::{self, fees, outcome::OutcomeTransactionBuildOutput, PlayerIndex},
     contract::{ContractParameters, Outcome, WinCondition},
     errors::Error,
-    parties::Player,
     spend_info::SplitSpendInfo,
 };
 
@@ -42,6 +41,8 @@ pub(crate) fn build_split_txs(
     params: &ContractParameters,
     outcome_build_output: &OutcomeTransactionBuildOutput,
 ) -> Result<SplitTransactionBuildOutput, Error> {
+    let players = params.sorted_players();
+
     let mut split_spend_infos = BTreeMap::<WinCondition, SplitSpendInfo>::new();
     let mut split_txs = BTreeMap::<Outcome, Transaction>::new();
 
@@ -54,7 +55,7 @@ pub(crate) fn build_split_txs(
         // Fee estimation
         let input_weight = outcome_spend_info.input_weight_for_split_tx();
         let spk_lengths = std::iter::repeat(P2TR_SCRIPT_PUBKEY_SIZE).take(payout_map.len());
-        let payout_values: BTreeMap<&Player, Amount> = fees::fee_calc_shared(
+        let payout_values: BTreeMap<PlayerIndex, Amount> = fees::fee_calc_shared(
             outcome_spend_info.outcome_value(),
             params.fee_rate,
             [input_weight],
@@ -71,7 +72,8 @@ pub(crate) fn build_split_txs(
 
         // payout_values is a btree, so outputs are automatically sorted by player.
         let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
-        for (&&player, &payout_value) in payout_values.iter() {
+        for (player_index, payout_value) in payout_values {
+            let &player = players.get(player_index).ok_or(Error)?;
             let split_spend_info = SplitSpendInfo::new(
                 player,
                 &params.market_maker,
@@ -85,7 +87,7 @@ pub(crate) fn build_split_txs(
             });
 
             let win_cond = WinCondition {
-                winner: player,
+                player_index,
                 outcome,
             };
             split_spend_infos.insert(win_cond, split_spend_info);
@@ -151,7 +153,7 @@ pub(crate) fn partial_sign_split_txs(
             .ok_or(Error)?;
 
         // Hash the split TX.
-        let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
+        let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
 
         // Partially sign the sighash.
         // We must use the untweaked musig key to sign the split script spend,
@@ -205,7 +207,7 @@ pub(crate) fn verify_split_tx_partial_signatures(
             .ok_or(Error)?;
 
         // Hash the split TX.
-        let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
+        let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
 
         // Verifies the player's partial signature on the split TX for one specific script path spend.
         musig2::verify_partial(
@@ -257,7 +259,7 @@ where
                 .ok_or(Error)?;
 
             // Hash the split TX.
-            let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
+            let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
 
             let compact_sig = musig2::aggregate_partial_signatures(
                 outcome_spend_info.key_agg_ctx_untweaked(),
@@ -306,7 +308,7 @@ pub(crate) fn verify_split_tx_aggregated_signatures(
                 .key_agg_ctx_untweaked()
                 .aggregated_pubkey();
 
-            let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.winner)?;
+            let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
 
             let batch_row = BatchVerificationRow::from_signature(
                 winners_joint_pubkey,
@@ -340,7 +342,7 @@ pub(crate) fn split_tx_prevout<'x>(
     let payout_map = params.outcome_payouts.get(&win_cond.outcome).ok_or(Error)?;
     let split_tx_output_index = payout_map
         .keys()
-        .position(|p| p == &win_cond.winner)
+        .position(|&player_index| player_index == win_cond.player_index)
         .ok_or(Error)?;
 
     let input = TxIn {

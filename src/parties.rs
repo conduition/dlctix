@@ -17,7 +17,7 @@ pub struct MarketMaker {
 /// ticket hashes, so players might share common pubkeys. However, for the
 /// economics of the contract to work, every player should be allocated
 /// their own completely unique ticket hash.
-#[derive(Debug, Clone, Copy, Ord, PartialOrd, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Ord, PartialOrd, Hash, Eq, PartialEq)]
 pub struct Player {
     /// An ephemeral public key controlled by the player.
     ///

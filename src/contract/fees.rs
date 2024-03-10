@@ -43,18 +43,18 @@ pub(crate) fn fee_subtract_safe(
 ///
 /// Returns an error if any output value is negative, or is less than the
 /// given dust threshold.
-pub(crate) fn fee_calc_shared<'k, I, O, T>(
+pub(crate) fn fee_calc_shared<I, O, T>(
     available_coins: Amount,
     fee_rate: FeeRate,
     input_weights: I,
     output_spk_lens: O,
     dust_threshold: Amount,
-    payout_map: &'k BTreeMap<T, u64>,
-) -> Result<BTreeMap<&'k T, Amount>, Error>
+    payout_map: &BTreeMap<T, u64>,
+) -> Result<BTreeMap<T, Amount>, Error>
 where
     I: IntoIterator<Item = InputWeightPrediction>,
     O: IntoIterator<Item = usize>,
-    T: Clone + Ord,
+    T: Copy + Ord,
 {
     let fee_total = fee_calc_safe(fee_rate, input_weights, output_spk_lens)?;
 
@@ -65,7 +65,7 @@ where
     // Payout amounts are computed by using relative weights.
     payout_map
         .iter()
-        .map(|(key, &weight)| {
+        .map(|(&key, &weight)| {
             let payout = available_coins * weight / total_weight;
             let payout_value = fee_subtract_safe(payout, fee_shared, dust_threshold)?;
             Ok((key, payout_value))
