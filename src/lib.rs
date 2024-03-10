@@ -618,6 +618,13 @@ impl SignedContract {
         )
     }
 
+    pub fn outcome_close_tx_input_and_prevout<'a>(
+        &'a self,
+        outcome: &Outcome,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::outcome::outcome_tx_prevout(&self.dlc.outcome_tx_build, outcome, 0)
+    }
+
     pub fn split_win_tx_input_and_prevout<'a>(
         &'a self,
         win_cond: &WinCondition,
@@ -712,7 +719,7 @@ impl SignedContract {
 
         // Confirm we're signing the correct input
         let (mut expected_input, expected_prevout) =
-            self.outcome_reclaim_tx_input_and_prevout(outcome)?;
+            self.outcome_close_tx_input_and_prevout(outcome)?;
 
         // The caller can use whatever sequence they want.
         expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
@@ -884,6 +891,58 @@ impl SignedContract {
         )?;
 
         sellback_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
+    /// Sign a cooperative closing transaction which spends a player's split transaction output.
+    /// The market maker can use this method once they have issued off-chain payouts to this
+    /// winning player. Once the player has her off-chain payout, they can send their secret
+    /// key to the market maker to let him reclaim all the on-chain capital efficiently.
+    pub fn sign_split_close_tx_input<T: Borrow<TxOut>>(
+        &self,
+        win_cond: &WinCondition,
+        close_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: impl Into<Scalar>,
+        player_secret_key: impl Into<Scalar>,
+    ) -> Result<(), Error> {
+        let market_maker_secret_key = market_maker_secret_key.into();
+        if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (mut expected_input, expected_prevout) =
+            self.split_sellback_tx_input_and_prevout(win_cond)?;
+
+        // The caller can use whatever sequence they want.
+        expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
+
+        check_input_matches_expected(
+            close_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            expected_prevout,
+        )?;
+
+        let split_spend_info = self
+            .dlc
+            .split_tx_build
+            .split_spend_infos()
+            .get(win_cond)
+            .ok_or(Error)?;
+
+        let witness = split_spend_info.witness_tx_close(
+            close_tx,
+            input_index,
+            prevouts,
+            market_maker_secret_key,
+            player_secret_key.into(),
+        )?;
+
+        close_tx.input[input_index].witness = witness;
         Ok(())
     }
 }

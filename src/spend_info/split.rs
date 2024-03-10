@@ -318,4 +318,37 @@ impl SplitSpendInfo {
 
         Ok(witness)
     }
+
+    /// Derive the witness for a cooperative closing transaction which spends from
+    /// a single player's split TX output. The market maker must provide the secret
+    /// key given by the player after a complete off-chain payout.
+    pub(crate) fn witness_tx_close<T: Borrow<TxOut>>(
+        &self,
+        close_tx: &Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: Scalar,
+        player_secret_key: Scalar,
+    ) -> Result<Witness, Error> {
+        let mm_pubkey = market_maker_secret_key.base_point_mul();
+        let sighash = SighashCache::new(close_tx).taproot_key_spend_signature_hash(
+            input_index,
+            prevouts,
+            TapSighashType::Default,
+        )?;
+
+        let ordered_seckeys = self.tweaked_ctx.pubkeys().into_iter().map(|pubkey| {
+            if pubkey == &mm_pubkey {
+                market_maker_secret_key
+            } else {
+                player_secret_key
+            }
+        });
+
+        let group_seckey: Scalar = self.tweaked_ctx.aggregated_seckey(ordered_seckeys)?;
+
+        let signature: CompactSignature = musig2::deterministic::sign_solo(group_seckey, sighash);
+        let witness = Witness::from_slice(&[signature.serialize()]);
+        Ok(witness)
+    }
 }
