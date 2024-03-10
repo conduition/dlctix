@@ -19,7 +19,12 @@ pub struct MarketMaker {
 /// their own completely unique ticket hash.
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Hash, Eq, PartialEq)]
 pub struct Player {
-    /// A public key controlled by the player.
+    /// An ephemeral public key controlled by the player.
+    ///
+    /// It should be ephemeral because once the player receives an off-chain
+    /// payout, they can choose to reveal their secret key to the market
+    /// maker, which allows the market maker to use key-spending (instead
+    /// of inefficient script spending) to reclaim the on-chain capital.
     pub pubkey: Point,
 
     /// The ticket hashes used for HTLCs. To buy into the DLC, players must
