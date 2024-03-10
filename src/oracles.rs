@@ -1,5 +1,7 @@
 use secp::{MaybePoint, MaybeScalar, Point, Scalar};
 
+use crate::OutcomeIndex;
+
 /// An oracle's announcement of a future event.
 #[derive(Debug, Clone)]
 pub struct EventAnnouncement {
@@ -18,7 +20,7 @@ pub struct EventAnnouncement {
 
 impl EventAnnouncement {
     /// Computes the oracle's locking point for the given outcome index.
-    pub fn attestation_lock_point(&self, index: usize) -> Option<MaybePoint> {
+    pub fn attestation_lock_point(&self, index: OutcomeIndex) -> Option<MaybePoint> {
         let msg = &self.outcome_messages.get(index)?;
 
         let e: MaybeScalar = musig2::compute_challenge_hash_tweak(

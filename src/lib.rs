@@ -27,7 +27,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-pub use contract::{ContractParameters, Outcome, PlayerIndex, SigMap, WinCondition};
+pub use contract::{ContractParameters, Outcome, OutcomeIndex, PlayerIndex, SigMap, WinCondition};
 pub use oracles::EventAnnouncement;
 pub use parties::{MarketMaker, Player};
 
@@ -420,7 +420,7 @@ pub struct ContractSignatures {
     /// [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
     /// by the [`EventAnnouncement`]'s oracle producing an attestation signature using
     /// [`EventAnnouncement::attestation_secret`].
-    pub outcome_tx_signatures: BTreeMap<usize, AdaptorSignature>,
+    pub outcome_tx_signatures: BTreeMap<OutcomeIndex, AdaptorSignature>,
     /// A set of signatures needed for broadcasting split transactions. Each signature
     /// is specific to a certain combination of player and outcome.
     pub split_tx_signatures: BTreeMap<WinCondition, CompactSignature>,
@@ -492,7 +492,10 @@ impl SignedContract {
     }
 
     /// Return an unsigned outcome transaction.
-    pub fn unsigned_outcome_tx<'a>(&'a self, outcome_index: usize) -> Option<&'a Transaction> {
+    pub fn unsigned_outcome_tx<'a>(
+        &'a self,
+        outcome_index: OutcomeIndex,
+    ) -> Option<&'a Transaction> {
         self.dlc
             .outcome_tx_build
             .outcome_txs()
@@ -503,7 +506,7 @@ impl SignedContract {
     /// to a specific outcome.
     pub fn signed_outcome_tx(
         &self,
-        outcome_index: usize,
+        outcome_index: OutcomeIndex,
         attestation: impl Into<MaybeScalar>,
     ) -> Result<Transaction, Error> {
         let attestation = attestation.into();

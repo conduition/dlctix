@@ -19,6 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// index in the sorted set of players.
 pub type PlayerIndex = usize;
 
+/// A type alias for clarity. Players in the DLC are often referred to by their
+/// index in the sorted set of players.
+pub type OutcomeIndex = usize;
+
 /// Represents a mapping of player to payout weight for a given outcome.
 ///
 /// A player's payout under an outcome is proportional to the size of their payout weight
@@ -82,7 +86,7 @@ pub struct ContractParameters {
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Outcome {
     /// Indicates the oracle attested to a particular outcome of the given index.
-    Attestation(usize),
+    Attestation(OutcomeIndex),
 
     /// Indicates the oracle failed to attest to any outcome, and the event expiry
     /// timelock was reached.

@@ -8,7 +8,7 @@ use secp::{Point, Scalar};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    contract::{ContractParameters, Outcome},
+    contract::{ContractParameters, Outcome, OutcomeIndex},
     errors::Error,
     spend_info::{FundingSpendInfo, OutcomeSpendInfo},
 };
@@ -226,7 +226,7 @@ pub(crate) fn verify_outcome_tx_partial_signatures(
 pub(crate) struct OutcomeSignatures {
     /// A set of adaptor signatures which can be unlocked by the oracle's attestation
     /// for each outcome.
-    pub(crate) outcome_tx_signatures: BTreeMap<usize, AdaptorSignature>,
+    pub(crate) outcome_tx_signatures: BTreeMap<OutcomeIndex, AdaptorSignature>,
 
     /// The complete signature on the expiry transaction. This is `None` if the
     /// [`ContractParameters::outcome_payouts`] field does not contain an
@@ -312,7 +312,7 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
     params: &ContractParameters,
     our_pubkey: Point,
     outcome_build_out: &OutcomeTransactionBuildOutput,
-    outcome_tx_signatures: &BTreeMap<usize, AdaptorSignature>,
+    outcome_tx_signatures: &BTreeMap<OutcomeIndex, AdaptorSignature>,
     expiry_tx_signature: Option<CompactSignature>,
 ) -> Result<(), Error> {
     let funding_spend_info = &outcome_build_out.funding_spend_info;
