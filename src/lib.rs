@@ -368,6 +368,16 @@ impl SigningSession<PartialSignatureSharingRound> {
 
         Ok(())
     }
+
+    /// Consume the `SigningSession` and convert it into a [`SignedContract`]
+    /// using the given set of signatures. The signatures should be verified
+    /// with [`SigningSession::verify_aggregated_signatures`] first.
+    pub fn into_signed_contract(self, signatures: ContractSignatures) -> SignedContract {
+        SignedContract {
+            signatures,
+            dlc: self.dlc,
+        }
+    }
 }
 
 /// This validates a set of sigmaps received from untrusted peers. Ensures
