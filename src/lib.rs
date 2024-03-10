@@ -698,6 +698,59 @@ impl SignedContract {
         Ok(())
     }
 
+    /// Sign a cooperative closing transaction which spends the outcome transaction output.
+    /// The market maker can use this method once they have issued off-chain payouts to
+    /// all winning players for an outcome. Once the players have their payouts, they can
+    /// send their secret keys to the market maker to let him reclaim all the on-chain
+    /// capital.
+    pub fn sign_outcome_close_tx_input<T: Borrow<TxOut>>(
+        &self,
+        outcome: &Outcome,
+        close_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: impl Into<Scalar>,
+        player_secret_keys: &BTreeMap<Point, Scalar>,
+    ) -> Result<(), Error> {
+        let market_maker_secret_key = market_maker_secret_key.into();
+        if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (mut expected_input, expected_prevout) =
+            self.outcome_reclaim_tx_input_and_prevout(outcome)?;
+
+        // The caller can use whatever sequence they want.
+        expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
+
+        check_input_matches_expected(
+            close_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            expected_prevout,
+        )?;
+
+        let outcome_spend_info = self
+            .dlc
+            .outcome_tx_build
+            .outcome_spend_infos()
+            .get(outcome)
+            .ok_or(Error)?;
+
+        let witness = outcome_spend_info.witness_tx_close(
+            close_tx,
+            input_index,
+            prevouts,
+            market_maker_secret_key,
+            player_secret_keys,
+        )?;
+
+        close_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
     pub fn sign_split_win_tx_input<T: Borrow<TxOut>>(
         &self,
         win_cond: &WinCondition,

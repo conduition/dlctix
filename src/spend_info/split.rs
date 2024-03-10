@@ -281,7 +281,7 @@ impl SplitSpendInfo {
         Ok(witness)
     }
 
-    /// Derive the signature hash for a sellback transaction, which spends from
+    /// Derive the witness for a sellback transaction, which spends from
     /// a split transaction.
     pub(crate) fn witness_tx_sellback<T: Borrow<TxOut>>(
         &self,
