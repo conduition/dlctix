@@ -28,7 +28,6 @@ use crate::{
 /// 3. A hash-lock which pays to the market maker immediately if they learn the
 //     payout preimage from the player.
 pub(crate) struct SplitSpendInfo {
-    untweaked_ctx: KeyAggContext,
     tweaked_ctx: KeyAggContext,
     payout_value: Amount,
     spend_info: TaprootSpendInfo,
@@ -107,7 +106,7 @@ impl SplitSpendInfo {
             weighted_script_leaves,
         )?;
 
-        let tweaked_ctx = untweaked_ctx.clone().with_taproot_tweak(
+        let tweaked_ctx = untweaked_ctx.with_taproot_tweak(
             tr_spend_info
                 .merkle_root()
                 .expect("should always have merkle root")
@@ -115,7 +114,6 @@ impl SplitSpendInfo {
         )?;
 
         let split_spend_info = SplitSpendInfo {
-            untweaked_ctx,
             tweaked_ctx,
             payout_value,
             spend_info: tr_spend_info,
@@ -124,14 +122,6 @@ impl SplitSpendInfo {
             sellback_script,
         };
         Ok(split_spend_info)
-    }
-
-    pub(crate) fn key_agg_ctx_untweaked(&self) -> &KeyAggContext {
-        &self.untweaked_ctx
-    }
-
-    pub(crate) fn key_agg_ctx_tweaked(&self) -> &KeyAggContext {
-        &self.tweaked_ctx
     }
 
     /// Returns the TX locking script for this player's split TX output contract.

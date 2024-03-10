@@ -138,10 +138,6 @@ impl OutcomeSpendInfo {
         &self.untweaked_ctx
     }
 
-    pub(crate) fn key_agg_ctx_tweaked(&self) -> &KeyAggContext {
-        &self.tweaked_ctx
-    }
-
     /// Returns the TX locking script for this this outcome contract.
     pub(crate) fn script_pubkey(&self) -> ScriptBuf {
         ScriptBuf::new_p2tr_tweaked(self.spend_info.output_key())
