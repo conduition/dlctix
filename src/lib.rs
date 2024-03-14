@@ -33,6 +33,20 @@ pub use parties::{MarketMaker, Player};
 
 /// Represents the combined output of building all transactions and precomputing
 /// all necessary data for a ticketed DLC.
+///
+/// This type does not have any serialization methods or trait implementations, because
+/// each party in the DLC is expected to use the [`ContractParameters`] to independently
+/// construct the [`TicketedDLC`] transactions which they will sign. This reduces the
+/// amount of data each party must validate. Instead of minutely inspecting thousands of
+/// transactions, they should validate the properties of the [`ContractParameters`], and
+/// thus be assured that if others are using the same [`ContractParameters`], then they
+/// will be constructing and signing the same set of transactions.
+///
+/// [`TicketedDLC`] implements [`Clone`], but cloning should be done very sparingly, because
+/// in real-world environments a [`TicketedDLC`] could easily encapsulate many thousands of
+/// transactions involved, consuming megabytes of memory. Cloning it would be extremely
+/// inefficient and potentially dangerous.
+#[derive(Clone)]
 pub struct TicketedDLC {
     params: ContractParameters,
     funding_outpoint: OutPoint,
@@ -52,13 +66,13 @@ impl TicketedDLC {
         let outcome_tx_build = contract::outcome::build_outcome_txs(&params, funding_outpoint)?;
         let split_tx_build = contract::split::build_split_txs(&params, &outcome_tx_build)?;
 
-        let txs = TicketedDLC {
+        let dlc = TicketedDLC {
             params,
             funding_outpoint,
             outcome_tx_build,
             split_tx_build,
         };
-        Ok(txs)
+        Ok(dlc)
     }
 
     /// Returns the contract parameters used to construct the DLC.

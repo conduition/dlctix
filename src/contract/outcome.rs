@@ -16,6 +16,7 @@ use crate::{
 /// Represents the output of building the set of outcome transactions.
 /// This contains cached data used for constructing further transactions,
 /// or signing the outcome transactions themselves.
+#[derive(Clone)]
 pub(crate) struct OutcomeTransactionBuildOutput {
     outcome_txs: BTreeMap<Outcome, Transaction>,
     outcome_spend_infos: BTreeMap<Outcome, OutcomeSpendInfo>,
