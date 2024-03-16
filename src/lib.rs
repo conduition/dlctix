@@ -1,4 +1,6 @@
-//! THIS IS A PLACEHOLDER PACKAGE. DO NOT INSTALL THIS.
+//! Crate documentation is TODO.
+//!
+//! See [the Github README](https://github.com/conduition/dlctix).
 
 pub(crate) mod consts;
 pub(crate) mod contract;
