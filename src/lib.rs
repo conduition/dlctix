@@ -516,6 +516,11 @@ impl SignedContract {
         &self.dlc
     }
 
+    /// Returns the contract parameters used to construct the DLC.
+    pub fn params(&self) -> &ContractParameters {
+        &self.dlc.params
+    }
+
     /// Return an unsigned outcome transaction.
     pub fn unsigned_outcome_tx<'a>(
         &'a self,
@@ -679,6 +684,50 @@ impl SignedContract {
         win_cond: &WinCondition,
     ) -> Result<(TxIn, &'a TxOut), Error> {
         contract::split::split_tx_prevout(&self.dlc.params, &self.dlc.split_tx_build, win_cond, 0)
+    }
+
+    pub fn outcome_reclaim_tx_input_weight(
+        &self,
+        outcome: &Outcome,
+    ) -> Option<InputWeightPrediction> {
+        self.dlc
+            .outcome_tx_build
+            .outcome_spend_infos()
+            .get(outcome)
+            .map(|outcome_spend_info| outcome_spend_info.input_weight_for_reclaim_tx())
+    }
+
+    pub fn split_win_tx_input_weight(&self) -> InputWeightPrediction {
+        // All win TXs have the same input weight.
+        self.dlc
+            .split_tx_build
+            .split_spend_infos()
+            .values()
+            .next()
+            .unwrap()
+            .input_weight_for_win_tx()
+    }
+
+    pub fn split_reclaim_tx_input_weight(&self) -> InputWeightPrediction {
+        // All reclaim TXs have the same input weight.
+        self.dlc
+            .split_tx_build
+            .split_spend_infos()
+            .values()
+            .next()
+            .unwrap()
+            .input_weight_for_reclaim_tx()
+    }
+
+    pub fn split_sellback_tx_input_weight(&self) -> InputWeightPrediction {
+        // All sellback TXs have the same input weight.
+        self.dlc
+            .split_tx_build
+            .split_spend_infos()
+            .values()
+            .next()
+            .unwrap()
+            .input_weight_for_sellback_tx()
     }
 
     pub fn sign_outcome_reclaim_tx_input<T: Borrow<TxOut>>(
