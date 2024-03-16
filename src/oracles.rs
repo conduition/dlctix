@@ -30,7 +30,7 @@ impl EventAnnouncement {
         );
 
         // S = R + eD
-        Some(self.nonce_point + e * self.oracle_pubkey)
+        Some(self.nonce_point.to_even_y() + e * self.oracle_pubkey.to_even_y())
     }
 
     /// Computes the oracle's attestation secret scalar - the discrete log of the
@@ -50,12 +50,15 @@ impl EventAnnouncement {
             return None;
         }
 
+        let d = oracle_seckey.negate_if(self.oracle_pubkey.parity());
+        let k = nonce.negate_if(self.nonce_point.parity());
+
         let msg = &self.outcome_messages.get(index)?;
         let e: MaybeScalar = musig2::compute_challenge_hash_tweak(
             &self.nonce_point.serialize_xonly(),
             &self.oracle_pubkey,
             msg,
         );
-        Some(nonce + e * oracle_seckey)
+        Some(k + e * d)
     }
 }
