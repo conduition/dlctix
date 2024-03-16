@@ -8,6 +8,7 @@ readme = "README.md"
 license = "Unlicense"
 repository = "https://github.com/conduition/ticketed-dlc"
 keywords = ["dlc", "smart", "contract", "ticket", "auction"]
+exclude = ["/img"]
 
 [dependencies]
 bitcoin = { version = "0.31.1" }
