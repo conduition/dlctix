@@ -18,7 +18,9 @@ use contract::{
 use errors::Error;
 use hashlock::{sha256, Preimage};
 
-use bitcoin::{sighash::Prevouts, OutPoint, Transaction, TxIn, TxOut};
+use bitcoin::{
+    sighash::Prevouts, transaction::InputWeightPrediction, OutPoint, Transaction, TxIn, TxOut,
+};
 use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::{MaybeScalar, Point, Scalar};
 
@@ -27,7 +29,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-pub use contract::{ContractParameters, Outcome, OutcomeIndex, PlayerIndex, SigMap, WinCondition};
+pub use contract::{
+    ContractParameters, Outcome, OutcomeIndex, PayoutWeights, PlayerIndex, SigMap, WinCondition,
+};
 pub use oracles::EventAnnouncement;
 pub use parties::{MarketMaker, Player};
 
