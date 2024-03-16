@@ -78,7 +78,6 @@ pub(crate) fn build_split_txs(
             let split_spend_info = SplitSpendInfo::new(
                 player,
                 &params.market_maker,
-                payout_value,
                 params.relative_locktime_block_delta,
             )?;
 

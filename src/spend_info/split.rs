@@ -4,7 +4,7 @@ use bitcoin::{
     sighash::{Prevouts, SighashCache},
     taproot::{LeafVersion, TapLeafHash, TaprootSpendInfo},
     transaction::InputWeightPrediction,
-    Amount, ScriptBuf, TapSighashType, Transaction, TxOut, Witness,
+    ScriptBuf, TapSighashType, Transaction, TxOut, Witness,
 };
 use musig2::{CompactSignature, KeyAggContext};
 use secp::{Point, Scalar};
@@ -30,7 +30,6 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct SplitSpendInfo {
     tweaked_ctx: KeyAggContext,
-    payout_value: Amount,
     spend_info: TaprootSpendInfo,
     win_script: ScriptBuf,
     reclaim_script: ScriptBuf,
@@ -41,7 +40,6 @@ impl SplitSpendInfo {
     pub(crate) fn new(
         winner: &Player,
         market_maker: &MarketMaker,
-        payout_value: Amount,
         block_delta: u16,
     ) -> Result<SplitSpendInfo, Error> {
         let mut pubkeys = vec![market_maker.pubkey, winner.pubkey];
@@ -116,7 +114,6 @@ impl SplitSpendInfo {
 
         let split_spend_info = SplitSpendInfo {
             tweaked_ctx,
-            payout_value,
             spend_info: tr_spend_info,
             win_script,
             reclaim_script,
@@ -128,10 +125,6 @@ impl SplitSpendInfo {
     /// Returns the TX locking script for this player's split TX output contract.
     pub(crate) fn script_pubkey(&self) -> ScriptBuf {
         ScriptBuf::new_p2tr_tweaked(self.spend_info.output_key())
-    }
-
-    pub(crate) fn payout_value(&self) -> Amount {
-        self.payout_value
     }
 
     /// Computes the input weight when spending an output of the split TX
