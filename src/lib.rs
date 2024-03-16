@@ -7,6 +7,7 @@ pub(crate) mod contract;
 pub(crate) mod errors;
 pub(crate) mod oracles;
 pub(crate) mod parties;
+pub(crate) mod serialization;
 pub(crate) mod spend_info;
 
 pub mod hashlock;
@@ -25,6 +26,7 @@ use bitcoin::{
 };
 use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
 use secp::{MaybeScalar, Point, Scalar};
+use serde::{Deserialize, Serialize};
 
 use std::{
     borrow::Borrow,
@@ -52,7 +54,7 @@ pub use parties::{MarketMaker, Player};
 /// in real-world environments a [`TicketedDLC`] could easily encapsulate many thousands of
 /// transactions involved, consuming megabytes of memory. Cloning it would be extremely
 /// inefficient and potentially dangerous.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct TicketedDLC {
     params: ContractParameters,
     funding_outpoint: OutPoint,
@@ -101,6 +103,15 @@ impl TicketedDLC {
             script_pubkey: self.outcome_tx_build.funding_spend_info().script_pubkey(),
             value: self.params.funding_value,
         }
+    }
+}
+
+impl std::fmt::Debug for TicketedDLC {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TicketedDLC")
+            .field("params", self.params())
+            .field("funding_outpoint", &self.funding_outpoint)
+            .finish()
     }
 }
 
@@ -437,7 +448,7 @@ fn validate_sigmaps_completeness<T>(
 /// Only some players care about certain outcomes, and a player only enforce one
 /// specific split TX unlock condition - the one corresponding to their ticket
 /// hash. We can save bandwidth and
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContractSignatures {
     /// A complete signature on the expiry transaction. Set to `None` if the
     /// [`ContractParameters::outcome_payouts`] field did not contain an
@@ -456,6 +467,7 @@ pub struct ContractSignatures {
 
 /// Represents a fully signed and enforceable [`TicketedDLC`], created
 /// by running a [`SigningSession`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SignedContract {
     signatures: ContractSignatures,
     dlc: TicketedDLC,

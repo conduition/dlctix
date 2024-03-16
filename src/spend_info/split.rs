@@ -27,7 +27,7 @@ use crate::{
 ///
 /// 3. A hash-lock which pays to the market maker immediately if they learn the
 //     payout preimage from the player.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct SplitSpendInfo {
     tweaked_ctx: KeyAggContext,
     spend_info: TaprootSpendInfo,

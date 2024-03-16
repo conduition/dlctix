@@ -4,6 +4,7 @@ pub(crate) mod split;
 
 use bitcoin::{transaction::InputWeightPrediction, Amount, FeeRate, TxOut};
 use secp::Point;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
@@ -42,7 +43,7 @@ pub type PayoutWeights = BTreeMap<PlayerIndex, u64>;
 /// If all players use the same [`ContractParameters`], they should be able to
 /// construct identical sets of outcome and split transactions, and exchange musig2
 /// signatures thereupon.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractParameters {
     /// The market maker who provides capital for the DLC ticketing process.
     pub market_maker: MarketMaker,
@@ -345,9 +346,7 @@ impl ContractParameters {
 /// Represents a mapping of different signature requirements to some arbitrary type T.
 /// This can be used to efficiently look up signatures, nonces, etc, for each
 /// outcome transaction, and for different [`WinCondition`]s within each split transaction.
-///
-/// TODO serde serialization
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
+#[derive(Debug, Clone, Eq, PartialEq, Default, Serialize, Deserialize)]
 pub struct SigMap<T> {
     pub by_outcome: BTreeMap<Outcome, T>,
     pub by_win_condition: BTreeMap<WinCondition, T>,

@@ -36,7 +36,7 @@ use std::{borrow::Borrow, collections::BTreeMap};
 /// Once PTLCs are available, we can instead sign the split transaction once
 /// and distribute adaptor-signatures to each player, encrypted under the
 /// player's ticket point.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct OutcomeSpendInfo {
     untweaked_ctx: KeyAggContext,
     tweaked_ctx: KeyAggContext,

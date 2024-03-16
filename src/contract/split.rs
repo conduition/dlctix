@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Represents the output of building the set of split transactions.
 /// This contains cached data used for constructing further transactions,
 /// or signing the split transactions themselves.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct SplitTransactionBuildOutput {
     split_txs: BTreeMap<Outcome, Transaction>,
     split_spend_infos: BTreeMap<WinCondition, SplitSpendInfo>,

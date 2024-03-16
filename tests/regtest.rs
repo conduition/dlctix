@@ -52,9 +52,44 @@ fn new_rpc_client() -> BitcoinClient {
     BitcoinClient::new(&bitcoind_rpc_url, auth).expect("failed to create bitcoind RPC client")
 }
 
+const FUNDING_VALUE: Amount = Amount::from_sat(200_000);
+
+/// Make sure we're on the regtest network and we have enough bitcoins
+/// in the regtest node wallet, otherwise the actual test will not work.
+fn check_regtest_wallet(rpc_client: &BitcoinClient, min_balance: Amount) {
+    let info = rpc_client
+        .get_mining_info()
+        .expect("failed to get network info from remote node");
+
+    assert_eq!(
+        info.chain,
+        bitcoin::Network::Regtest,
+        "node should be running in regtest mode, found {} instead",
+        info.chain
+    );
+
+    let mut wallet_info = rpc_client.get_wallet_info().unwrap_or_else(|_| {
+        if let Some(wallet_name) = rpc_client.list_wallet_dir().unwrap().into_iter().next() {
+            rpc_client.load_wallet(&wallet_name).unwrap();
+        } else {
+            rpc_client
+                .create_wallet("dlctix_market_maker", None, None, None, None)
+                .unwrap();
+        }
+        rpc_client.get_wallet_info().unwrap()
+    });
+
+    while wallet_info.balance < min_balance {
+        mine_blocks(&rpc_client, 101).expect("error mining blocks");
+        wallet_info = rpc_client.get_wallet_info().unwrap();
+    }
+}
+
 /// Take some money from the regtest node and deposit it into the given address.
 /// Return the outpoint and prevout.
 fn take_usable_utxo(rpc: &BitcoinClient, address: &Address, amount: Amount) -> (OutPoint, TxOut) {
+    check_regtest_wallet(rpc, amount + Amount::from_sat(50_000));
+
     let txid: bitcoin::Txid = rpc
         .call(
             "sendtoaddress",
@@ -177,7 +212,14 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
 
     let pubnonces_by_sender: BTreeMap<Point, SigMap<PubNonce>> = signing_sessions
         .iter()
-        .map(|(&sender_pubkey, session)| (sender_pubkey, session.our_public_nonces().clone()))
+        .map(|(&sender_pubkey, session)| {
+            // Simulate serialization, as pubnonces are usually sent over a transport channel.
+            let serialized_nonces = serde_json::to_string(session.our_public_nonces())
+                .expect("error serializing pubnonces");
+            let received_pubnonces =
+                serde_json::from_str(&serialized_nonces).expect("error deserializing pubnonces");
+            (sender_pubkey, received_pubnonces)
+        })
         .collect();
 
     let signing_sessions: BTreeMap<Point, SigningSession<PartialSignatureSharingRound>> =
@@ -193,7 +235,13 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
 
     let partial_sigs_by_sender: BTreeMap<Point, SigMap<PartialSignature>> = signing_sessions
         .iter()
-        .map(|(&sender_pubkey, session)| (sender_pubkey, session.our_partial_signatures().clone()))
+        .map(|(&sender_pubkey, session)| {
+            let serialized_sigs = serde_json::to_string(session.our_partial_signatures())
+                .expect("error serializing partial signatures");
+            let received_sigs = serde_json::from_str(&serialized_sigs)
+                .expect("error deserializing partial signatures");
+            (sender_pubkey, received_sigs)
+        })
         .collect();
 
     // Everyone's signatures can be verified by everyone else.
@@ -223,42 +271,18 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
     }
 
     let (_, contract) = signed_contracts.pop_first().unwrap();
-    contract
-}
 
-const FUNDING_VALUE: Amount = Amount::from_sat(200_000);
-
-/// Make sure we're on the regtest network and we have enough bitcoins
-/// in the regtest node wallet, otherwise the actual test will not work.
-#[test]
-fn check_regtest_wallet() {
-    let rpc_client = new_rpc_client();
-    let info = rpc_client
-        .get_mining_info()
-        .expect("failed to get network info from remote node");
-
+    // SignedContract should be able to be stored and retrieved via serde serialization.
+    let decoded_contract = serde_json::from_str(
+        &serde_json::to_string(&contract).expect("error serializing SignedContract"),
+    )
+    .expect("error deserializing SignedContract");
     assert_eq!(
-        info.chain,
-        bitcoin::Network::Regtest,
-        "node should be running in regtest mode, found {} instead",
-        info.chain
+        contract, decoded_contract,
+        "deserialized SignedContract does not match original"
     );
 
-    let mut wallet_info = rpc_client.get_wallet_info().unwrap_or_else(|_| {
-        if let Some(wallet_name) = rpc_client.list_wallet_dir().unwrap().into_iter().next() {
-            rpc_client.load_wallet(&wallet_name).unwrap();
-        } else {
-            rpc_client
-                .create_wallet("dlctix_market_maker", None, None, None, None)
-                .unwrap();
-        }
-        rpc_client.get_wallet_info().unwrap()
-    });
-
-    while wallet_info.balance < FUNDING_VALUE + Amount::from_sat(100_000) {
-        mine_blocks(&rpc_client, 101).expect("error mining blocks");
-        wallet_info = rpc_client.get_wallet_info().unwrap();
-    }
+    contract
 }
 
 #[test]
@@ -338,7 +362,6 @@ fn simple_ticketed_dlc_simulation() {
     };
 
     // Fund the market maker
-
     let (mm_utxo_outpoint, mm_utxo_prevout) = take_usable_utxo(
         &rpc,
         &market_maker_address,

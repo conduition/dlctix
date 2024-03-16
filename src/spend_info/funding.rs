@@ -10,7 +10,7 @@ use crate::{
     parties::{MarketMaker, Player},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct FundingSpendInfo {
     key_agg_ctx: KeyAggContext,
     funding_value: Amount,

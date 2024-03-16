@@ -1,9 +1,12 @@
 use secp::Point;
+use serde::{Deserialize, Serialize};
+
+use crate::serialization;
 
 /// The agent who provides the on-chain capital to facilitate the ticketed DLC.
 /// Could be one of the players in the DLC, or could be a neutral 3rd party
 /// who wishes to profit by leveraging their capital.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarketMaker {
     pub pubkey: Point,
 }
@@ -17,7 +20,7 @@ pub struct MarketMaker {
 /// ticket hashes, so players might share common pubkeys. However, for the
 /// economics of the contract to work, every player should be allocated
 /// their own completely unique ticket hash.
-#[derive(Debug, Clone, Ord, PartialOrd, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Ord, PartialOrd, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Player {
     /// An ephemeral public key controlled by the player.
     ///
@@ -29,11 +32,13 @@ pub struct Player {
 
     /// The ticket hashes used for HTLCs. To buy into the DLC, players must
     /// purchase the preimages of these hashes.
+    #[serde(with = "serialization::byte_array")]
     pub ticket_hash: [u8; 32],
 
     /// A hash used for unlocking the split TX output early. To allow winning
     /// players to receive off-chain payouts, they must provide this `payout_hash`,
     /// for which they know the preimage. By selling the preimage to the market maker,
     /// they allow the market maker to reclaim the on-chain funds.
+    #[serde(with = "serialization::byte_array")]
     pub payout_hash: [u8; 32],
 }

@@ -142,6 +142,10 @@ dependencies = [
  "rand",
  "secp",
  "secp256k1",
+ "serde",
+ "serde_cbor",
+ "serde_json",
+ "serdect",
  "sha2",
 ]
 
@@ -171,6 +175,12 @@ dependencies = [
  "libc",
  "wasi",
 ]
+
+[[package]]
+name = "half"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
 
 [[package]]
 name = "hex"
@@ -240,6 +250,8 @@ dependencies = [
  "rand",
  "secp",
  "secp256k1",
+ "serde",
+ "serdect",
  "sha2",
  "subtle",
 ]
@@ -312,14 +324,16 @@ checksum = "e86697c916019a8588c99b5fac3cead74ec0b4b819707a682fd4d23fa0ce1ba1"
 
 [[package]]
 name = "secp"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17bc1eb87a1e5b16339a614823bcdf91855ad21bfecc0f8384dedd53b838f5b8"
+checksum = "1507279bb0404bb566f85523e48fcf37a158daa5380577ee0d93f3ef4df39ccc"
 dependencies = [
  "base16ct",
  "once_cell",
  "rand",
  "secp256k1",
+ "serde",
+ "serdect",
  "subtle",
 ]
 
@@ -354,6 +368,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_cbor"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bef2ebfde456fb76bbcf9f59315333decc4fda0b2b44b420243c11e0f5ec1f5"
+dependencies = [
+ "half",
+ "serde",
+]
+
+[[package]]
 name = "serde_derive"
 version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -372,6 +396,16 @@ checksum = "c5f09b1bd632ef549eaa9f60a1f8de742bdbc698e6cee2095fc84dde5f549ae0"
 dependencies = [
  "itoa",
  "ryu",
+ "serde",
+]
+
+[[package]]
+name = "serdect"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a84f14a19e9a014bb9f4512488d9829a68e04ecabffb0f9904cd1ace94598177"
+dependencies = [
+ "base16ct",
  "serde",
 ]
 

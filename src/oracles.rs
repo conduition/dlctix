@@ -1,9 +1,10 @@
 use secp::{MaybePoint, MaybeScalar, Point, Scalar};
+use serde::{Deserialize, Serialize};
 
-use crate::OutcomeIndex;
+use crate::{serialization, OutcomeIndex};
 
 /// An oracle's announcement of a future event.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventAnnouncement {
     /// The signing oracle's pubkey
     pub oracle_pubkey: Point,
@@ -12,6 +13,7 @@ pub struct EventAnnouncement {
     pub nonce_point: Point,
 
     /// Naive but easy.
+    #[serde(with = "serialization::vec_of_byte_vecs")]
     pub outcome_messages: Vec<Vec<u8>>,
 
     /// The unix timestamp beyond which the oracle is considered to have gone AWOL.
