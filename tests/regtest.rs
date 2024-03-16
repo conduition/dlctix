@@ -245,7 +245,7 @@ fn check_regtest_wallet() {
     );
 
     let mut wallet_info = rpc_client.get_wallet_info().unwrap_or_else(|_| {
-        if let Some(wallet_name) = rpc_client.list_wallets().unwrap().into_iter().next() {
+        if let Some(wallet_name) = rpc_client.list_wallet_dir().unwrap().into_iter().next() {
             rpc_client.load_wallet(&wallet_name).unwrap();
         } else {
             rpc_client
