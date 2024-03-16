@@ -323,7 +323,7 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
     // We only need to verify signatures on outcomes where our pubkey might
     // win something.
     let relevant_outcomes: BTreeSet<Outcome> = params
-        .win_conditions_controlled_by_pubkey(our_pubkey)
+        .win_conditions_claimable_by_pubkey(our_pubkey)
         .ok_or(Error)?
         .into_iter()
         .map(|win_cond| win_cond.outcome)

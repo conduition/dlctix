@@ -285,7 +285,7 @@ pub(crate) fn verify_split_tx_aggregated_signatures(
     // We only need to verify signatures on win conditions where our pubkey might
     // win something.
     let relevant_win_conditions: BTreeSet<WinCondition> = params
-        .win_conditions_controlled_by_pubkey(our_pubkey)
+        .win_conditions_claimable_by_pubkey(our_pubkey)
         .ok_or(Error)?;
 
     let batch: Vec<BatchVerificationRow> = relevant_win_conditions

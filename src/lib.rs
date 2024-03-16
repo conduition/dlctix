@@ -476,7 +476,7 @@ impl SignedContract {
         let relevant_win_conditions = self
             .dlc
             .params
-            .win_conditions_controlled_by_pubkey(player_pubkey)?;
+            .win_conditions_claimable_by_pubkey(player_pubkey)?;
 
         let relevant_outcomes: BTreeSet<Outcome> = relevant_win_conditions
             .iter()

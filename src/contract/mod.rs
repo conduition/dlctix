@@ -201,6 +201,54 @@ impl ContractParameters {
             .collect()
     }
 
+    /// Return the set of all win conditions for which the given pubkey can claim
+    /// a split transaction output. In other words, this returns the possible
+    /// paths for a given signer to claim winnings.
+    ///
+    /// If `pubkey` belongs to one or more players, this returns all [`WinCondition`]s
+    /// in which the player or players are winners.
+    ///
+    /// If `pubkey` belongs to the market maker, this returns every [`WinCondition`]
+    /// across the entire contract.
+    ///
+    /// Returns `None` if the pubkey does not belong to any player in the DLC.
+    ///
+    /// Returns an empty `BTreeSet` if the player is part of the DLC, but isn't due to
+    /// receive any payouts on any DLC outcome.
+    pub fn win_conditions_claimable_by_pubkey(
+        &self,
+        pubkey: Point,
+    ) -> Option<BTreeSet<WinCondition>> {
+        // To sign as the market maker, the caller need only provide the correct secret key.
+        let is_market_maker = pubkey == self.market_maker.pubkey;
+
+        let controlling_players = self.players_controlled_by_pubkey(pubkey);
+
+        // Short circuit if this pubkey is not known.
+        if controlling_players.is_empty() && !is_market_maker {
+            return None;
+        }
+
+        let mut relevant_win_conditions = BTreeSet::<WinCondition>::new();
+        for (&outcome, payout_map) in self.outcome_payouts.iter() {
+            // We can broadcast the split TX for any win-conditions whose player is
+            // controlled by `pubkey`. If we're the market maker, we have a claim
+            // path on every win condition.
+            relevant_win_conditions.extend(payout_map.keys().filter_map(|player_index| {
+                if is_market_maker || controlling_players.contains(player_index) {
+                    Some(WinCondition {
+                        player_index: *player_index,
+                        outcome,
+                    })
+                } else {
+                    None
+                }
+            }));
+        }
+
+        Some(relevant_win_conditions)
+    }
+
     /// Return the set of all win conditions which the given pubkey will need to sign
     /// split transactions for.
     ///
@@ -230,18 +278,21 @@ impl ContractParameters {
 
         let mut win_conditions_to_sign = BTreeSet::<WinCondition>::new();
         for (&outcome, payout_map) in self.outcome_payouts.iter() {
-            // We want to sign the split TX for any win-conditions whose player is controlled
-            // by `pubkey`. If we're the market maker, we sign every win condition.
-            win_conditions_to_sign.extend(payout_map.keys().filter_map(|player_index| {
-                if is_market_maker || controlling_players.contains(player_index) {
-                    Some(WinCondition {
-                        player_index: *player_index,
+            // We want to sign the split TX for any win-conditions under outcomes where the
+            // given `pubkey` is one of the winners. If we're the market maker, we sign every
+            // win condition.
+            if is_market_maker
+                || controlling_players
+                    .iter()
+                    .any(|player_index| payout_map.contains_key(player_index))
+            {
+                win_conditions_to_sign.extend(payout_map.keys().map(|&player_index| {
+                    WinCondition {
+                        player_index,
                         outcome,
-                    })
-                } else {
-                    None
-                }
-            }));
+                    }
+                }));
+            }
         }
 
         Some(win_conditions_to_sign)
