@@ -80,7 +80,7 @@ pub(crate) fn build_outcome_txs(
             };
 
             let lock_time = match outcome {
-                Outcome::Expiry => LockTime::from_consensus(params.event.expiry),
+                Outcome::Expiry => LockTime::from_consensus(params.event.expiry.ok_or(Error)?),
                 Outcome::Attestation(_) => LockTime::ZERO, // Normal outcome transaction
             };
 
@@ -91,9 +91,9 @@ pub(crate) fn build_outcome_txs(
                 output: vec![outcome_output],
             };
 
-            (outcome, outcome_tx)
+            Ok((outcome, outcome_tx))
         })
-        .collect();
+        .collect::<Result<_, Error>>()?;
 
     let funding_spend_info =
         FundingSpendInfo::new(&params.market_maker, &params.players, params.funding_value)?;

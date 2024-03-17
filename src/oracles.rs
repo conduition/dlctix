@@ -1,7 +1,7 @@
 use secp::{MaybePoint, MaybeScalar, Point, Scalar};
 use serde::{Deserialize, Serialize};
 
-use crate::{serialization, OutcomeIndex};
+use crate::{serialization, Outcome, OutcomeIndex};
 
 /// An oracle's announcement of a future event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,7 +17,8 @@ pub struct EventAnnouncement {
     pub outcome_messages: Vec<Vec<u8>>,
 
     /// The unix timestamp beyond which the oracle is considered to have gone AWOL.
-    pub expiry: u32,
+    /// If set to `None`, the event has no expected expiry.
+    pub expiry: Option<u32>,
 }
 
 impl EventAnnouncement {
@@ -62,5 +63,12 @@ impl EventAnnouncement {
             msg,
         );
         Some(k + e * d)
+    }
+
+    /// Returns an iterator over all possible outcomes in the event.
+    pub fn all_outcomes(&self) -> impl IntoIterator<Item = Outcome> {
+        (0..self.outcome_messages.len())
+            .map(|i| Outcome::Attestation(i))
+            .chain(self.expiry.map(|_| Outcome::Expiry))
     }
 }
