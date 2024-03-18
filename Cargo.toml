@@ -1,3 +1,6 @@
+[workspace]
+members = ["demo/mm_server"]
+
 [package]
 name = "dlctix"
 version = "0.0.4"
