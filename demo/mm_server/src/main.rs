@@ -18,8 +18,7 @@ use std::{
 };
 
 fn run_server() -> Result<(), Box<dyn Error>> {
-    let bind_addr =
-        env::var("MM_SERVER_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:1420".to_string());
+    let bind_addr = env::var("MM_SERVER_ADDRESS").unwrap_or_else(|_| "0.0.0.0:1420".to_string());
 
     let market_maker_seckey: Scalar = env::var("MM_SECRET_KEY")?.parse()?;
     let market_maker_pubkey = market_maker_seckey.base_point_mul();

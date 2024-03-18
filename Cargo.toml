@@ -1,5 +1,5 @@
 [workspace]
-members = ["demo/mm_server"]
+members = ["demo/mm_server", "demo/player_client"]
 
 [package]
 name = "dlctix"

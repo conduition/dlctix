@@ -14,12 +14,14 @@ pub type OutcomeOdds = BTreeMap<Outcome, u64>;
 #[derive(Serialize, Deserialize)]
 pub struct ClientHello {
     pub player_pubkey: Point,
+    #[serde(serialize_with = "serdect::array::serialize_hex_lower_or_bin")]
     pub payout_hash: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct ServerHello {
     pub player_id: PlayerID,
+    #[serde(serialize_with = "serdect::array::serialize_hex_lower_or_bin")]
     pub ticket_hash: [u8; 32],
     pub market_maker_pubkey: Point,
     pub event: EventAnnouncement,
