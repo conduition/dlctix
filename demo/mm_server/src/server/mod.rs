@@ -41,7 +41,7 @@ fn handle_tcp_conn(
             state_wlock.stage = Stage::OfferAndAck;
         }
 
-        if let Some(accepted_players) = offer_and_ack::offer_and_ack_cycle(&state)? {
+        if let Some(accepted_offers) = offer_and_ack::offer_and_ack_cycle(&state)? {
             // TODO prompt all players for signatures
         }
     }
