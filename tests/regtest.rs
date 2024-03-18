@@ -353,7 +353,7 @@ fn simple_ticketed_dlc_simulation() {
                 Vec::from(b"alice and bob win"),
                 Vec::from(b"carol and dave win"),
             ],
-            expiry: u32::try_from(block_height + 2000).unwrap(),
+            expiry: u32::try_from(block_height + 2000).ok(),
         },
         outcome_payouts,
         fee_rate: FeeRate::from_sat_per_vb_unchecked(100),

@@ -253,7 +253,7 @@ mod tests {
                     Vec::from(b"option 2"),
                     Vec::from(b"option 3"),
                 ],
-                expiry: u32::MAX,
+                expiry: Some(u32::MAX),
             },
             outcome_payouts: BTreeMap::from([
                 (Outcome::Attestation(0), PayoutWeights::from([(0, 1)])),
