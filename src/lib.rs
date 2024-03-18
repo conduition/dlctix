@@ -705,6 +705,13 @@ impl SignedContract {
         contract::split::split_tx_prevout(&self.dlc.params, &self.dlc.split_tx_build, win_cond, 0)
     }
 
+    pub fn split_close_tx_input_and_prevout<'a>(
+        &'a self,
+        win_cond: &WinCondition,
+    ) -> Result<(TxIn, &'a TxOut), Error> {
+        contract::split::split_tx_prevout(&self.dlc.params, &self.dlc.split_tx_build, win_cond, 0)
+    }
+
     pub fn outcome_reclaim_tx_input_weight(
         &self,
         outcome: &Outcome,

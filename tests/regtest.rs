@@ -1,8 +1,9 @@
 use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi};
 use dlctix::*;
+use serial_test::serial;
 
 use bitcoin::{
-    blockdata::transaction::predict_weight,
+    blockdata::transaction::{predict_weight, InputWeightPrediction},
     key::TweakedPublicKey,
     locktime::absolute::LockTime,
     sighash::{Prevouts, SighashCache, TapSighashType},
@@ -286,7 +287,8 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
 }
 
 #[test]
-fn simple_ticketed_dlc_simulation() {
+#[serial]
+fn ticketed_dlc_with_on_chain_resolutions() {
     let mut rng = rand::thread_rng();
 
     // Oracle
@@ -591,4 +593,335 @@ fn simple_ticketed_dlc_simulation() {
     mine_blocks(&rpc, signed_contract.params().relative_locktime_block_delta).unwrap();
     rpc.send_raw_transaction(&reclaim_tx)
         .expect("failed to broadcast reclaim TX");
+}
+
+#[test]
+#[serial]
+fn ticketed_dlc_individual_sellback() {
+    let mut rng = rand::thread_rng();
+
+    // Oracle
+    let oracle_seckey = Scalar::random(&mut rng);
+    let oracle_secnonce = Scalar::random(&mut rng);
+
+    // Market maker
+    let market_maker_seckey = Scalar::random(&mut rng);
+    let market_maker = MarketMaker {
+        pubkey: market_maker_seckey.base_point_mul(),
+    };
+    let market_maker_address = p2tr_address(market_maker.pubkey);
+
+    // players
+    let alice = SimulatedPlayer::random(&mut rng);
+    let bob = SimulatedPlayer::random(&mut rng);
+    let carol = SimulatedPlayer::random(&mut rng);
+
+    let players = BTreeSet::from([
+        alice.player.clone(),
+        bob.player.clone(),
+        carol.player.clone(),
+    ]);
+    let player_indexes: BTreeMap<Player, PlayerIndex> = players
+        .iter()
+        .enumerate()
+        .map(|(i, player)| (player.clone(), i))
+        .collect();
+
+    let rpc = new_rpc_client();
+
+    let outcome_payouts = BTreeMap::<Outcome, PayoutWeights>::from([
+        (
+            Outcome::Attestation(0),
+            PayoutWeights::from([(player_indexes[&alice.player], 1)]),
+        ),
+        (
+            Outcome::Attestation(1),
+            PayoutWeights::from([
+                (player_indexes[&bob.player], 1),
+                (player_indexes[&carol.player], 1),
+            ]),
+        ),
+    ]);
+
+    let contract_params = ContractParameters {
+        market_maker,
+        players,
+        event: EventAnnouncement {
+            oracle_pubkey: oracle_seckey.base_point_mul(),
+            nonce_point: oracle_secnonce.base_point_mul(),
+            outcome_messages: vec![Vec::from(b"alice wins"), Vec::from(b"bob and carol win")],
+            expiry: None,
+        },
+        outcome_payouts,
+        fee_rate: FeeRate::from_sat_per_vb_unchecked(100),
+        funding_value: FUNDING_VALUE,
+        relative_locktime_block_delta: 25,
+    };
+
+    // Fund the market maker
+    let (mm_utxo_outpoint, mm_utxo_prevout) = take_usable_utxo(
+        &rpc,
+        &market_maker_address,
+        FUNDING_VALUE + Amount::from_sat(50_000),
+    );
+
+    // Prepare a funding transaction
+    let funding_tx = signed_funding_tx(
+        market_maker_seckey,
+        contract_params.funding_output().unwrap(),
+        mm_utxo_outpoint,
+        &mm_utxo_prevout,
+    );
+    let funding_outpoint = OutPoint {
+        txid: funding_tx.txid(),
+        vout: 0,
+    };
+
+    // Construct all the DLC transactions.
+    let ticketed_dlc = TicketedDLC::new(contract_params, funding_outpoint)
+        .expect("failed to constructed ticketed DLC transactions");
+
+    // Sign all the transactions.
+    let seckeys = [market_maker_seckey, alice.seckey, bob.seckey, carol.seckey];
+    let signed_contract = musig_sign_ticketed_dlc(&ticketed_dlc, seckeys, &mut rng);
+
+    // At this point, the market maker is confident they'll be able to reclaim their
+    // capital if needed, and the players know they'll be able to enforce the DLC outcome
+    // if they purchase their ticket preimage.
+    //
+    // The market maker can now broadcast the funding TX.
+    rpc.send_raw_transaction(&funding_tx)
+        .expect("failed to broadcast funding TX");
+    mine_blocks(&rpc, 1).unwrap();
+
+    let event: &EventAnnouncement = &signed_contract.params().event;
+
+    let outcome_index: usize = 1;
+
+    // The oracle attests to outcome 1, where Bob and Carol are winners.
+    let oracle_attestation = event
+        .attestation_secret(outcome_index, oracle_seckey, oracle_secnonce)
+        .unwrap();
+
+    // Anyone can unlock and broadcast an outcome TX if they know the attestation.
+    let outcome_tx = signed_contract
+        .signed_outcome_tx(outcome_index, oracle_attestation)
+        .expect("failed to sign outcome TX");
+    rpc.send_raw_transaction(&outcome_tx)
+        .expect("failed to broadcast outcome TX");
+
+    // Assume Bob bought his ticket preimage. He can now
+    // use it to unlock the split transaction.
+    let bob_win_cond = WinCondition {
+        outcome: Outcome::Attestation(outcome_index),
+        player_index: player_indexes[&bob.player],
+    };
+    let split_tx = signed_contract
+        .signed_split_tx(&bob_win_cond, bob.ticket_preimage)
+        .expect("failed to sign split TX");
+
+    // Only after a block delay of `delta` should Bob be able to
+    // broadcast the split TX.
+    mine_blocks(&rpc, signed_contract.params().relative_locktime_block_delta).unwrap();
+    rpc.send_raw_transaction(&split_tx)
+        .expect("failed to broadcast split TX");
+
+    // Carol is not cooperative, but Bob wants to receive his payout off-chain, so
+    // he cooperates with the market maker by selling the market maker his payout
+    // preimage, and then giving the market maker his secret key. This allows the
+    // market maker to recover Bob's split TX output unilaterally.
+    let (close_tx_input, close_tx_prevout) = signed_contract
+        .split_close_tx_input_and_prevout(&bob_win_cond)
+        .expect("error computing split close TX prevouts");
+    let mut close_tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![close_tx_input],
+        output: vec![TxOut {
+            script_pubkey: market_maker_address.script_pubkey(),
+            value: {
+                let close_tx_weight = predict_weight(
+                    [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
+                    [P2TR_SCRIPT_PUBKEY_SIZE],
+                );
+                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                close_tx_prevout.value - fee
+            },
+        }],
+    };
+
+    signed_contract
+        .sign_split_close_tx_input(
+            &bob_win_cond,
+            &mut close_tx,
+            0, // input index
+            &Prevouts::All(&[close_tx_prevout]),
+            market_maker_seckey,
+            bob.seckey,
+        )
+        .expect("failed to sign split close TX");
+
+    // The close TX can be broadcast immediately.
+    rpc.send_raw_transaction(&close_tx)
+        .expect("failed to broadcast split close TX");
+}
+
+#[test]
+#[serial]
+fn ticketed_dlc_all_winners_cooperate() {
+    let mut rng = rand::thread_rng();
+
+    // Oracle
+    let oracle_seckey = Scalar::random(&mut rng);
+    let oracle_secnonce = Scalar::random(&mut rng);
+
+    // Market maker
+    let market_maker_seckey = Scalar::random(&mut rng);
+    let market_maker = MarketMaker {
+        pubkey: market_maker_seckey.base_point_mul(),
+    };
+    let market_maker_address = p2tr_address(market_maker.pubkey);
+
+    // players
+    let alice = SimulatedPlayer::random(&mut rng);
+    let bob = SimulatedPlayer::random(&mut rng);
+    let carol = SimulatedPlayer::random(&mut rng);
+
+    let players = BTreeSet::from([
+        alice.player.clone(),
+        bob.player.clone(),
+        carol.player.clone(),
+    ]);
+    let player_indexes: BTreeMap<Player, PlayerIndex> = players
+        .iter()
+        .enumerate()
+        .map(|(i, player)| (player.clone(), i))
+        .collect();
+
+    let rpc = new_rpc_client();
+
+    let outcome_payouts = BTreeMap::<Outcome, PayoutWeights>::from([
+        (
+            Outcome::Attestation(0),
+            PayoutWeights::from([(player_indexes[&alice.player], 1)]),
+        ),
+        (
+            Outcome::Attestation(1),
+            PayoutWeights::from([
+                (player_indexes[&bob.player], 1),
+                (player_indexes[&carol.player], 1),
+            ]),
+        ),
+    ]);
+
+    let contract_params = ContractParameters {
+        market_maker,
+        players,
+        event: EventAnnouncement {
+            oracle_pubkey: oracle_seckey.base_point_mul(),
+            nonce_point: oracle_secnonce.base_point_mul(),
+            outcome_messages: vec![Vec::from(b"alice wins"), Vec::from(b"bob and carol win")],
+            expiry: None,
+        },
+        outcome_payouts,
+        fee_rate: FeeRate::from_sat_per_vb_unchecked(100),
+        funding_value: FUNDING_VALUE,
+        relative_locktime_block_delta: 25,
+    };
+
+    // Fund the market maker
+    let (mm_utxo_outpoint, mm_utxo_prevout) = take_usable_utxo(
+        &rpc,
+        &market_maker_address,
+        FUNDING_VALUE + Amount::from_sat(50_000),
+    );
+
+    // Prepare a funding transaction
+    let funding_tx = signed_funding_tx(
+        market_maker_seckey,
+        contract_params.funding_output().unwrap(),
+        mm_utxo_outpoint,
+        &mm_utxo_prevout,
+    );
+    let funding_outpoint = OutPoint {
+        txid: funding_tx.txid(),
+        vout: 0,
+    };
+
+    // Construct all the DLC transactions.
+    let ticketed_dlc = TicketedDLC::new(contract_params, funding_outpoint)
+        .expect("failed to constructed ticketed DLC transactions");
+
+    // Sign all the transactions.
+    let seckeys = [market_maker_seckey, alice.seckey, bob.seckey, carol.seckey];
+    let signed_contract = musig_sign_ticketed_dlc(&ticketed_dlc, seckeys, &mut rng);
+
+    // At this point, the market maker is confident they'll be able to reclaim their
+    // capital if needed, and the players know they'll be able to enforce the DLC outcome
+    // if they purchase their ticket preimage.
+    //
+    // The market maker can now broadcast the funding TX.
+    rpc.send_raw_transaction(&funding_tx)
+        .expect("failed to broadcast funding TX");
+    mine_blocks(&rpc, 1).unwrap();
+
+    let event: &EventAnnouncement = &signed_contract.params().event;
+
+    let outcome_index: usize = 1;
+    let outcome = Outcome::Attestation(outcome_index);
+
+    // The oracle attests to outcome 1, where Bob and Carol are winners.
+    let oracle_attestation = event
+        .attestation_secret(outcome_index, oracle_seckey, oracle_secnonce)
+        .unwrap();
+
+    // Anyone can unlock and broadcast an outcome TX if they know the attestation.
+    let outcome_tx = signed_contract
+        .signed_outcome_tx(outcome_index, oracle_attestation)
+        .expect("failed to sign outcome TX");
+    rpc.send_raw_transaction(&outcome_tx)
+        .expect("failed to broadcast outcome TX");
+
+    // Bob and Carol both bought their ticket preimages. They want to
+    // receive payouts off-chain, so they cooperate with the market maker
+    // by selling the market maker their payout preimages, and then giving
+    // the market maker their secret keys. This allows the market maker
+    // to recover the outcome TX output unilaterally.
+    let (close_tx_input, close_tx_prevout) = signed_contract
+        .outcome_close_tx_input_and_prevout(&outcome)
+        .expect("error constructing outcome close TX prevouts");
+    let mut close_tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![close_tx_input],
+        output: vec![TxOut {
+            script_pubkey: market_maker_address.script_pubkey(),
+            value: {
+                let close_tx_weight = predict_weight(
+                    [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
+                    [P2TR_SCRIPT_PUBKEY_SIZE],
+                );
+                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                close_tx_prevout.value - fee
+            },
+        }],
+    };
+
+    signed_contract
+        .sign_outcome_close_tx_input(
+            &outcome,
+            &mut close_tx,
+            0, // input index
+            &Prevouts::All(&[close_tx_prevout]),
+            market_maker_seckey,
+            &BTreeMap::from([
+                (bob.player.pubkey, bob.seckey),
+                (carol.player.pubkey, carol.seckey),
+            ]),
+        )
+        .expect("failed to sign outcome close TX");
+
+    // The close TX can be broadcast immediately.
+    rpc.send_raw_transaction(&close_tx)
+        .expect("failed to broadcast outcome close TX");
 }
