@@ -34,6 +34,7 @@ pub(crate) enum Stage {
 pub(crate) struct GlobalState {
     pub(crate) event: EventAnnouncement,
     pub(crate) odds: OutcomeOdds,
+    pub(crate) bitcoind: bitcoincore_rpc::Client,
     pub(crate) market_maker_seckey: Scalar,
     pub(crate) market_maker_pubkey: Point,
     pub(crate) registrations: HashMap<PlayerID, PlayerRegistration>,

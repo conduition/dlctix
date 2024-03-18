@@ -3,6 +3,8 @@ mod global_state;
 mod payouts;
 mod server;
 
+use bitcoincore_rpc::RpcApi;
+
 use crate::global_state::{GlobalState, Stage};
 use common::OutcomeOdds;
 use dlctix::secp::Scalar;
@@ -28,11 +30,23 @@ fn run_server() -> Result<(), Box<dyn Error>> {
     let odds: OutcomeOdds =
         serde_cbor::from_slice(&hex::decode(env::var("DLC_EVENT_ODDS_CBOR")?)?)?;
 
+    let bitcoind = {
+        let bitcoind_rpc_url = std::env::var("BITCOIND_RPC_URL")?;
+        let bitcoind_auth_username = std::env::var("BITCOIND_RPC_AUTH_USERNAME")?;
+        let bitcoind_auth_password = std::env::var("BITCOIND_RPC_AUTH_PASSWORD")?;
+        let auth = bitcoincore_rpc::Auth::UserPass(bitcoind_auth_username, bitcoind_auth_password);
+        bitcoincore_rpc::Client::new(&bitcoind_rpc_url, auth)?
+    };
+
+    // Check that a wallet is loaded
+    let _ = bitcoind.get_wallet_info()?;
+
     let global_state = Arc::new(RwLock::new(GlobalState {
         event,
         odds,
         market_maker_seckey,
         market_maker_pubkey,
+        bitcoind,
         registrations: HashMap::new(),
         stage: Stage::IntentRegistry,
     }));
