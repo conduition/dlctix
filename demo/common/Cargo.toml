@@ -8,5 +8,4 @@ edition = "2021"
 [dependencies]
 bitcoin = "0.31.1"
 dlctix = { version = "0.0.4", path = "../.." }
-secp = { version = "0.2.3", features = ["serde"] }
 serde = "1.0.197"

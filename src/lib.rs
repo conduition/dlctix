@@ -12,6 +12,7 @@ pub(crate) mod spend_info;
 
 pub mod hashlock;
 
+pub use musig2;
 pub use secp;
 
 use contract::{

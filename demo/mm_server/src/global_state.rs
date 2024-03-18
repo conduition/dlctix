@@ -29,6 +29,7 @@ pub(crate) struct PlayerRegistration {
 pub(crate) enum Stage {
     IntentRegistry,
     OfferAndAck,
+    SigningSession,
 }
 
 pub(crate) struct GlobalState {

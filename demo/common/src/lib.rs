@@ -1,6 +1,7 @@
 use bitcoin::Amount;
-use dlctix::{ContractParameters, EventAnnouncement, Outcome};
-use secp::Point;
+use dlctix::musig2::AggNonce;
+use dlctix::secp::Point;
+use dlctix::{ContractParameters, ContractSignatures, EventAnnouncement, Outcome, SigMap};
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
@@ -48,4 +49,14 @@ pub enum ClientOfferAck {
 pub enum ServerOfferAck {
     Ok,
     Retry,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ServerNonceAck {
+    Ok(SigMap<AggNonce>),
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ServerSignatureAck {
+    Ok(ContractSignatures),
 }

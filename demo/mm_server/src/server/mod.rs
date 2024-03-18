@@ -1,5 +1,6 @@
 mod handshake;
 mod offer_and_ack;
+mod signing_session;
 
 use crate::errors::WrongStageError;
 use crate::global_state::{GlobalState, Stage};
@@ -42,7 +43,20 @@ fn handle_tcp_conn(
         }
 
         if let Some(accepted_offers) = offer_and_ack::offer_and_ack_cycle(&state)? {
-            // TODO prompt all players for signatures
+            {
+                let mut state_wlock = state.write().unwrap();
+                state_wlock.stage = Stage::SigningSession;
+            }
+
+            let (funding_tx, signed_contract) =
+                signing_session::run_signing_sessions(&state, accepted_offers)?;
+
+            // TODO:
+            // - store signed contract offline
+            // - accept prepayments atomically
+            // - broadcast funding TX and await confs
+            // - sell ticket preimages atomically
+            // - watch blockchain and resolve contract
         }
     }
 
