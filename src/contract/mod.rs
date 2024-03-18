@@ -118,18 +118,9 @@ impl ContractParameters {
 
         for (outcome, payout_map) in self.outcome_payouts.iter() {
             // Check for unknown outcomes.
-            match outcome {
-                &Outcome::Attestation(outcome_index) => {
-                    if outcome_index >= self.event.outcome_messages.len() {
-                        return Err(Error);
-                    }
-                }
-                Outcome::Expiry => {
-                    if self.event.expiry.is_none() {
-                        return Err(Error);
-                    }
-                }
-            };
+            if !self.event.is_valid_outcome(outcome) {
+                return Err(Error);
+            }
 
             // Check for empty payout map.
             if payout_map.len() == 0 {

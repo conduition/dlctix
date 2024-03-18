@@ -65,6 +65,15 @@ impl EventAnnouncement {
         Some(k + e * d)
     }
 
+    /// Returns true if the given outcome is a valid outcome to wager on
+    /// for this event.
+    pub fn is_valid_outcome(&self, outcome: &Outcome) -> bool {
+        match outcome {
+            &Outcome::Attestation(i) => i < self.outcome_messages.len(),
+            Outcome::Expiry => self.expiry.is_some(),
+        }
+    }
+
     /// Returns an iterator over all possible outcomes in the event.
     pub fn all_outcomes(&self) -> impl IntoIterator<Item = Outcome> {
         (0..self.outcome_messages.len())
