@@ -925,3 +925,165 @@ fn ticketed_dlc_all_winners_cooperate() {
     rpc.send_raw_transaction(&close_tx)
         .expect("failed to broadcast outcome close TX");
 }
+
+#[test]
+#[serial]
+fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
+    let mut rng = rand::thread_rng();
+
+    // Oracle
+    let oracle_seckey = Scalar::random(&mut rng);
+    let oracle_secnonce = Scalar::random(&mut rng);
+
+    // Market maker
+    let market_maker_seckey = Scalar::random(&mut rng);
+    let market_maker = MarketMaker {
+        pubkey: market_maker_seckey.base_point_mul(),
+    };
+    let market_maker_address = p2tr_address(market_maker.pubkey);
+
+    // players
+    let alice = SimulatedPlayer::random(&mut rng);
+    let bob = SimulatedPlayer::random(&mut rng);
+
+    let players = BTreeSet::from([alice.player.clone(), bob.player.clone()]);
+    let player_indexes: BTreeMap<Player, PlayerIndex> = players
+        .iter()
+        .enumerate()
+        .map(|(i, player)| (player.clone(), i))
+        .collect();
+
+    let rpc = new_rpc_client();
+
+    let outcome_payouts = BTreeMap::<Outcome, PayoutWeights>::from([
+        (
+            Outcome::Attestation(0),
+            PayoutWeights::from([(player_indexes[&alice.player], 1)]),
+        ),
+        (
+            Outcome::Attestation(1),
+            PayoutWeights::from([(player_indexes[&bob.player], 1)]),
+        ),
+    ]);
+
+    let contract_params = ContractParameters {
+        market_maker,
+        players,
+        event: EventAnnouncement {
+            oracle_pubkey: oracle_seckey.base_point_mul(),
+            nonce_point: oracle_secnonce.base_point_mul(),
+            outcome_messages: vec![Vec::from(b"alice wins"), Vec::from(b"bob wins")],
+            expiry: None,
+        },
+        outcome_payouts,
+        fee_rate: FeeRate::from_sat_per_vb_unchecked(100),
+        funding_value: FUNDING_VALUE,
+        relative_locktime_block_delta: 25,
+    };
+
+    // Fund the market maker
+    let (mm_utxo_outpoint, mm_utxo_prevout) = take_usable_utxo(
+        &rpc,
+        &market_maker_address,
+        FUNDING_VALUE + Amount::from_sat(50_000),
+    );
+
+    // Prepare a funding transaction
+    let funding_tx = signed_funding_tx(
+        market_maker_seckey,
+        contract_params.funding_output().unwrap(),
+        mm_utxo_outpoint,
+        &mm_utxo_prevout,
+    );
+    let funding_outpoint = OutPoint {
+        txid: funding_tx.txid(),
+        vout: 0,
+    };
+
+    // Construct all the DLC transactions.
+    let ticketed_dlc = TicketedDLC::new(contract_params, funding_outpoint)
+        .expect("failed to constructed ticketed DLC transactions");
+
+    // Sign all the transactions.
+    let seckeys = [market_maker_seckey, alice.seckey, bob.seckey];
+    let signed_contract = musig_sign_ticketed_dlc(&ticketed_dlc, seckeys, &mut rng);
+
+    // At this point, the market maker is confident they'll be able to reclaim their
+    // capital if needed, and the players know they'll be able to enforce the DLC outcome
+    // if they purchase their ticket preimage.
+    //
+    // The market maker can now broadcast the funding TX.
+    rpc.send_raw_transaction(&funding_tx)
+        .expect("failed to broadcast funding TX");
+    mine_blocks(&rpc, 1).unwrap();
+
+    let event: &EventAnnouncement = &signed_contract.params().event;
+
+    // The oracle attests to outcome 0, where Alice wins.
+    let outcome_index: usize = 0;
+    let outcome = Outcome::Attestation(outcome_index);
+    let oracle_attestation = event
+        .attestation_secret(outcome_index, oracle_seckey, oracle_secnonce)
+        .unwrap();
+
+    // Anyone can unlock and broadcast an outcome TX if they know the attestation.
+    let outcome_tx = signed_contract
+        .signed_outcome_tx(outcome_index, oracle_attestation)
+        .expect("failed to sign outcome TX");
+    rpc.send_raw_transaction(&outcome_tx)
+        .expect("failed to broadcast outcome TX");
+
+    // Alice didn't buy her ticket preimage, so the market maker reclaims the outcome TX output.
+    let (reclaim_tx_input, reclaim_tx_prevout) = signed_contract
+        .outcome_reclaim_tx_input_and_prevout(&outcome)
+        .expect("error constructing outcome reclaim TX prevouts");
+    let mut reclaim_tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![reclaim_tx_input],
+        output: vec![TxOut {
+            script_pubkey: market_maker_address.script_pubkey(),
+            value: {
+                let reclaim_tx_weight = predict_weight(
+                    [signed_contract
+                        .outcome_reclaim_tx_input_weight(&outcome)
+                        .unwrap()],
+                    [P2TR_SCRIPT_PUBKEY_SIZE],
+                );
+                let fee = reclaim_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                reclaim_tx_prevout.value - fee
+            },
+        }],
+    };
+
+    signed_contract
+        .sign_outcome_reclaim_tx_input(
+            &outcome,
+            &mut reclaim_tx,
+            0, // input index
+            &Prevouts::All(&[reclaim_tx_prevout]),
+            market_maker_seckey,
+        )
+        .expect("failed to sign outcome reclaim TX");
+
+    // Loop twice to ensure we used the correct locktime multiple of delta.
+    for _ in 0..2 {
+        // The market maker should not be able to broadcast the reclaim TX right away,
+        // due to the relative locktime requirement.
+        let err = rpc
+            .send_raw_transaction(&reclaim_tx)
+            .expect_err("early broadcast of reclaim TX should fail");
+        assert_eq!(
+            err.to_string(),
+            "JSON-RPC error: RPC error response: RpcError { code: -26, \
+                message: \"non-BIP68-final\", data: None }",
+        );
+
+        mine_blocks(&rpc, signed_contract.params().relative_locktime_block_delta).unwrap();
+    }
+
+    // The reclaim TX can be broadcast once a block delay of 2*delta
+    // blocks has elapsed.
+    rpc.send_raw_transaction(&reclaim_tx)
+        .expect("failed to broadcast outcome reclaim TX");
+}
