@@ -1,5 +1,6 @@
+use crate::*;
+
 use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi};
-use dlctix::*;
 use serial_test::serial;
 
 use bitcoin::{
@@ -7,7 +8,7 @@ use bitcoin::{
     key::TweakedPublicKey,
     locktime::absolute::LockTime,
     sighash::{Prevouts, SighashCache, TapSighashType},
-    Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Transaction, TxIn, TxOut,
+    Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
 };
 use musig2::{CompactSignature, LiftedSignature, PartialSignature, PubNonce};
 use rand::{CryptoRng, RngCore};
@@ -587,8 +588,6 @@ fn ticketed_dlc_with_on_chain_resolutions() {
         .split_win_tx_input_and_prevout(&bob_win_cond)
         .unwrap();
 
-    // TODO test OP_CSV by spending without correct min sequence number
-
     let mut bob_win_tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
@@ -605,6 +604,36 @@ fn ticketed_dlc_with_on_chain_resolutions() {
             },
         }],
     };
+
+    // Ensure Bob cannot broadcast a win TX early. OP_CSV should
+    // enforce the relative locktime.
+    {
+        let mut invalid_bob_win_tx = bob_win_tx.clone();
+        invalid_bob_win_tx.input[0].sequence = Sequence::MAX;
+
+        manager
+            .contract
+            .unchecked_sign_split_win_tx_input(
+                &bob_win_cond,
+                &mut invalid_bob_win_tx,
+                0, // input index
+                &Prevouts::All(&[bob_split_prevout]),
+                manager.bob.ticket_preimage,
+                manager.bob.seckey,
+            )
+            .expect("failed to sign win TX");
+
+        let err = manager
+            .rpc
+            .send_raw_transaction(&invalid_bob_win_tx)
+            .expect_err("early broadcast of win TX should fail");
+        assert_eq!(
+            err.to_string(),
+            "JSON-RPC error: RPC error response: RpcError { code: -26, \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             data: None }",
+        );
+    }
 
     manager
         .contract
@@ -638,8 +667,6 @@ fn ticketed_dlc_with_on_chain_resolutions() {
         .split_reclaim_tx_input_and_prevout(&carol_win_cond)
         .unwrap();
 
-    // TODO test OP_CSV encumberance on reclaim script
-
     let mut reclaim_tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
@@ -656,6 +683,35 @@ fn ticketed_dlc_with_on_chain_resolutions() {
             },
         }],
     };
+
+    // Ensure the Market Maker cannot broadcast a split reclaim TX early. OP_CSV
+    // should enforce the relative locktime.
+    {
+        let mut invalid_reclaim_tx = reclaim_tx.clone();
+        invalid_reclaim_tx.input[0].sequence = Sequence::MAX;
+
+        manager
+            .contract
+            .unchecked_sign_split_reclaim_tx_input(
+                &carol_win_cond,
+                &mut invalid_reclaim_tx,
+                0, // input index
+                &Prevouts::All(&[carol_split_prevout]),
+                manager.market_maker_seckey,
+            )
+            .expect("failed to sign win TX");
+
+        let err = manager
+            .rpc
+            .send_raw_transaction(&invalid_reclaim_tx)
+            .expect_err("early broadcast of split reclaim TX should fail");
+        assert_eq!(
+            err.to_string(),
+            "JSON-RPC error: RPC error response: RpcError { code: -26, \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             data: None }",
+        );
+    }
 
     manager
         .contract
@@ -870,6 +926,35 @@ fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
         }],
     };
 
+    // Ensure the Market Maker cannot broadcast an outcome reclaim TX early. OP_CSV
+    // should enforce the relative locktime.
+    {
+        let mut invalid_reclaim_tx = reclaim_tx.clone();
+        invalid_reclaim_tx.input[0].sequence = Sequence::MAX;
+
+        manager
+            .contract
+            .unchecked_sign_outcome_reclaim_tx_input(
+                &outcome,
+                &mut invalid_reclaim_tx,
+                0, // input index
+                &Prevouts::All(&[reclaim_tx_prevout]),
+                manager.market_maker_seckey,
+            )
+            .expect("failed to sign outcome reclaim TX");
+
+        let err = manager
+            .rpc
+            .send_raw_transaction(&invalid_reclaim_tx)
+            .expect_err("early broadcast of outcome reclaim TX should fail");
+        assert_eq!(
+            err.to_string(),
+            "JSON-RPC error: RPC error response: RpcError { code: -26, \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             data: None }",
+        );
+    }
+
     manager
         .contract
         .sign_outcome_reclaim_tx_input(
@@ -912,7 +997,6 @@ fn ticketed_dlc_contract_expiry_with_on_chain_resolution() {
     let manager = SimulationManager::new();
 
     // The contract expires, paying out to dave.
-    let outcome = Outcome::Expiry;
     let expiry_tx = manager
         .contract
         .expiry_tx()
@@ -973,8 +1057,6 @@ fn ticketed_dlc_contract_expiry_with_on_chain_resolution() {
         .split_win_tx_input_and_prevout(&dave_win_cond)
         .unwrap();
 
-    // TODO test OP_CSV by spending without correct min sequence number
-
     let mut dave_win_tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
@@ -991,6 +1073,36 @@ fn ticketed_dlc_contract_expiry_with_on_chain_resolution() {
             },
         }],
     };
+
+    // Ensure Dave cannot broadcast the win TX early. OP_CSV should
+    // enforce the relative locktime.
+    {
+        let mut invalid_dave_win_tx = dave_win_tx.clone();
+        invalid_dave_win_tx.input[0].sequence = Sequence::MAX;
+
+        manager
+            .contract
+            .unchecked_sign_split_win_tx_input(
+                &dave_win_cond,
+                &mut invalid_dave_win_tx,
+                0, // input index
+                &Prevouts::All(&[dave_split_prevout]),
+                manager.dave.ticket_preimage,
+                manager.dave.seckey,
+            )
+            .expect("failed to sign win TX");
+
+        let err = manager
+            .rpc
+            .send_raw_transaction(&invalid_dave_win_tx)
+            .expect_err("early broadcast of win TX should fail");
+        assert_eq!(
+            err.to_string(),
+            "JSON-RPC error: RPC error response: RpcError { code: -26, \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             data: None }",
+        );
+    }
 
     manager
         .contract

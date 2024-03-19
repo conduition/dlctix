@@ -2,6 +2,9 @@
 //!
 //! See [the Github README](https://github.com/conduition/dlctix).
 
+#[cfg(test)]
+mod regtest;
+
 pub(crate) mod consts;
 pub(crate) mod contract;
 pub(crate) mod errors;
@@ -756,6 +759,32 @@ impl SignedContract {
             .input_weight_for_sellback_tx()
     }
 
+    pub(crate) fn unchecked_sign_outcome_reclaim_tx_input<T: Borrow<TxOut>>(
+        &self,
+        outcome: &Outcome,
+        reclaim_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: Scalar,
+    ) -> Result<(), Error> {
+        let outcome_spend_info = self
+            .dlc
+            .outcome_tx_build
+            .outcome_spend_infos()
+            .get(outcome)
+            .ok_or(Error)?;
+
+        let witness = outcome_spend_info.witness_tx_reclaim(
+            reclaim_tx,
+            input_index,
+            prevouts,
+            market_maker_secret_key,
+        )?;
+
+        reclaim_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
     pub fn sign_outcome_reclaim_tx_input<T: Borrow<TxOut>>(
         &self,
         outcome: &Outcome,
@@ -780,22 +809,13 @@ impl SignedContract {
             expected_prevout,
         )?;
 
-        let outcome_spend_info = self
-            .dlc
-            .outcome_tx_build
-            .outcome_spend_infos()
-            .get(outcome)
-            .ok_or(Error)?;
-
-        let witness = outcome_spend_info.witness_tx_reclaim(
+        self.unchecked_sign_outcome_reclaim_tx_input(
+            outcome,
             reclaim_tx,
             input_index,
             prevouts,
             market_maker_secret_key,
-        )?;
-
-        reclaim_tx.input[input_index].witness = witness;
-        Ok(())
+        )
     }
 
     /// Sign a cooperative closing transaction which spends the outcome transaction output.
@@ -851,6 +871,34 @@ impl SignedContract {
         Ok(())
     }
 
+    pub(crate) fn unchecked_sign_split_win_tx_input<T: Borrow<TxOut>>(
+        &self,
+        win_cond: &WinCondition,
+        win_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        ticket_preimage: Preimage,
+        player_secret_key: Scalar,
+    ) -> Result<(), Error> {
+        let split_spend_info = self
+            .dlc
+            .split_tx_build
+            .split_spend_infos()
+            .get(win_cond)
+            .ok_or(Error)?;
+
+        let witness = split_spend_info.witness_tx_win(
+            win_tx,
+            input_index,
+            prevouts,
+            ticket_preimage,
+            player_secret_key,
+        )?;
+
+        win_tx.input[input_index].witness = witness;
+        Ok(())
+    }
+
     pub fn sign_split_win_tx_input<T: Borrow<TxOut>>(
         &self,
         win_cond: &WinCondition,
@@ -885,6 +933,24 @@ impl SignedContract {
             expected_prevout,
         )?;
 
+        self.unchecked_sign_split_win_tx_input(
+            win_cond,
+            win_tx,
+            input_index,
+            prevouts,
+            ticket_preimage,
+            player_secret_key,
+        )
+    }
+
+    pub(crate) fn unchecked_sign_split_reclaim_tx_input<T: Borrow<TxOut>>(
+        &self,
+        win_cond: &WinCondition,
+        reclaim_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: Scalar,
+    ) -> Result<(), Error> {
         let split_spend_info = self
             .dlc
             .split_tx_build
@@ -892,15 +958,14 @@ impl SignedContract {
             .get(win_cond)
             .ok_or(Error)?;
 
-        let witness = split_spend_info.witness_tx_win(
-            win_tx,
+        let witness = split_spend_info.witness_tx_reclaim(
+            reclaim_tx,
             input_index,
             prevouts,
-            ticket_preimage,
-            player_secret_key,
+            market_maker_secret_key,
         )?;
 
-        win_tx.input[input_index].witness = witness;
+        reclaim_tx.input[input_index].witness = witness;
         Ok(())
     }
 
@@ -928,22 +993,13 @@ impl SignedContract {
             expected_prevout,
         )?;
 
-        let split_spend_info = self
-            .dlc
-            .split_tx_build
-            .split_spend_infos()
-            .get(win_cond)
-            .ok_or(Error)?;
-
-        let witness = split_spend_info.witness_tx_reclaim(
+        self.unchecked_sign_split_reclaim_tx_input(
+            win_cond,
             reclaim_tx,
             input_index,
             prevouts,
             market_maker_secret_key,
-        )?;
-
-        reclaim_tx.input[input_index].witness = witness;
-        Ok(())
+        )
     }
 
     pub fn sign_split_sellback_tx_input<T: Borrow<TxOut>>(
