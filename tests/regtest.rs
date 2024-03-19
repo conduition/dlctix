@@ -371,10 +371,10 @@ impl SimulationManager {
                     Vec::from(b"bob and carol win"),
                     Vec::from(b"alice wins"),
                 ],
-                expiry: u32::try_from(initial_block_height + 2000).ok(),
+                expiry: u32::try_from(initial_block_height + 100).ok(),
             },
             outcome_payouts,
-            fee_rate: FeeRate::from_sat_per_vb_unchecked(100),
+            fee_rate: FeeRate::from_sat_per_vb_unchecked(50),
             funding_value: FUNDING_VALUE,
             relative_locktime_block_delta: 25,
         };
@@ -451,6 +451,16 @@ impl SimulationManager {
             &self.rpc,
             self.contract.params().relative_locktime_block_delta,
         )
+    }
+
+    fn mine_until_expiry(&self) -> Result<(), bitcoincore_rpc::Error> {
+        let block_height = self.rpc.get_block_count()?;
+        let expiry_height = self.event().expiry.unwrap() as u64;
+        if block_height >= expiry_height {
+            return Ok(());
+        }
+
+        mine_blocks(&self.rpc, (expiry_height - block_height) as u16)
     }
 
     fn script_pubkey_market_maker(&self) -> ScriptBuf {
@@ -894,4 +904,184 @@ fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
         .rpc
         .send_raw_transaction(&reclaim_tx)
         .expect("failed to broadcast outcome reclaim TX");
+}
+
+#[test]
+#[serial]
+fn ticketed_dlc_contract_expiry_with_on_chain_resolution() {
+    let manager = SimulationManager::new();
+
+    // The contract expires, paying out to dave.
+    let outcome = Outcome::Expiry;
+    let expiry_tx = manager
+        .contract
+        .expiry_tx()
+        .expect("failed to fetch signed outcome TX");
+
+    // The expiry TX is locked so that it can only be spent once the
+    // event expiry height is reached.
+    let err = manager
+        .rpc
+        .send_raw_transaction(&expiry_tx)
+        .expect_err("early broadcast of expiry TX should fail");
+    assert_eq!(
+        err.to_string(),
+        "JSON-RPC error: RPC error response: RpcError { code: -26, \
+             message: \"non-final\", data: None }",
+    );
+
+    manager.mine_until_expiry().unwrap();
+    manager
+        .rpc
+        .send_raw_transaction(&expiry_tx)
+        .expect("failed to broadcast expiry TX");
+
+    // Assume Dave bought his ticket preimage. He can now
+    // use it to unlock the split transaction.
+    let dave_win_cond = WinCondition {
+        outcome: Outcome::Expiry,
+        player_index: manager.dave.index,
+    };
+
+    let split_tx = manager
+        .contract
+        .signed_split_tx(&dave_win_cond, manager.dave.ticket_preimage)
+        .expect("failed to sign split TX");
+
+    // Dave should not be able to broadcast the split TX right away,
+    // due to the relative locktime on the split TX.
+    let err = manager
+        .rpc
+        .send_raw_transaction(&split_tx)
+        .expect_err("early broadcast of split TX should fail");
+    assert_eq!(
+        err.to_string(),
+        "JSON-RPC error: RPC error response: RpcError { code: -26, \
+            message: \"non-BIP68-final\", data: None }",
+    );
+
+    // Only after a block delay of `delta` should Dave be able to
+    // broadcast the split TX.
+    manager.mine_delta_blocks().unwrap();
+    manager
+        .rpc
+        .send_raw_transaction(&split_tx)
+        .expect("failed to broadcast split TX");
+
+    let (dave_split_input, dave_split_prevout) = manager
+        .contract
+        .split_win_tx_input_and_prevout(&dave_win_cond)
+        .unwrap();
+
+    // TODO test OP_CSV by spending without correct min sequence number
+
+    let mut dave_win_tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![dave_split_input],
+        output: vec![TxOut {
+            script_pubkey: p2tr_script_pubkey(manager.dave.player.pubkey),
+            value: {
+                let win_tx_weight = predict_weight(
+                    [manager.contract.split_win_tx_input_weight()],
+                    [P2TR_SCRIPT_PUBKEY_SIZE],
+                );
+                let fee = win_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                dave_split_prevout.value - fee
+            },
+        }],
+    };
+
+    manager
+        .contract
+        .sign_split_win_tx_input(
+            &dave_win_cond,
+            &mut dave_win_tx,
+            0, // input index
+            &Prevouts::All(&[dave_split_prevout]),
+            manager.dave.ticket_preimage,
+            manager.dave.seckey,
+        )
+        .expect("failed to sign win TX");
+
+    // Only after a block delay of `delta` should Dave be able to
+    // broadcast the win TX.
+    manager.mine_delta_blocks().unwrap();
+    manager
+        .rpc
+        .send_raw_transaction(&dave_win_tx)
+        .expect("failed to broadcast Dave's win TX");
+}
+
+#[test]
+#[serial]
+fn ticketed_dlc_contract_expiry_cooperative_close() {
+    let manager = SimulationManager::new();
+
+    // The contract expires, paying out to dave.
+    let outcome = Outcome::Expiry;
+    let expiry_tx = manager
+        .contract
+        .expiry_tx()
+        .expect("failed to fetch signed outcome TX");
+
+    // The expiry TX is locked so that it can only be spent once the
+    // event expiry height is reached.
+    let err = manager
+        .rpc
+        .send_raw_transaction(&expiry_tx)
+        .expect_err("early broadcast of expiry TX should fail");
+    assert_eq!(
+        err.to_string(),
+        "JSON-RPC error: RPC error response: RpcError { code: -26, \
+             message: \"non-final\", data: None }",
+    );
+
+    manager.mine_until_expiry().unwrap();
+    manager
+        .rpc
+        .send_raw_transaction(&expiry_tx)
+        .expect("failed to broadcast expiry TX");
+
+    // Dave cooperates, selling his payout preimage to the market maker, so they
+    // can recover the outcome TX output unilaterally. Dave can now give his
+    // secret key to the market maker to improve on-chain efficiency.
+    let (close_tx_input, close_tx_prevout) = manager
+        .contract
+        .outcome_close_tx_input_and_prevout(&outcome)
+        .expect("error constructing outcome close TX prevouts");
+    let mut close_tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![close_tx_input],
+        output: vec![TxOut {
+            script_pubkey: manager.script_pubkey_market_maker(),
+            value: {
+                let close_tx_weight = predict_weight(
+                    [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
+                    [P2TR_SCRIPT_PUBKEY_SIZE],
+                );
+                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                close_tx_prevout.value - fee
+            },
+        }],
+    };
+
+    manager
+        .contract
+        .sign_outcome_close_tx_input(
+            &outcome,
+            &mut close_tx,
+            0, // input index
+            &Prevouts::All(&[close_tx_prevout]),
+            manager.market_maker_seckey,
+            &BTreeMap::from([(manager.dave.player.pubkey, manager.dave.seckey)]),
+        )
+        .expect("failed to sign outcome close TX");
+
+    // The close TX can be broadcast immediately.
+    manager
+        .rpc
+        .send_raw_transaction(&close_tx)
+        .expect("failed to broadcast outcome close TX");
 }

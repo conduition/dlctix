@@ -50,7 +50,7 @@ pub(crate) fn build_outcome_txs(
 
     let funding_input = TxIn {
         previous_output: funding_outpoint,
-        sequence: Sequence::MAX,
+        sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
         ..TxIn::default()
     };
     let outcome_value = params.outcome_output_value()?;
