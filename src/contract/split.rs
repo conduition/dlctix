@@ -42,8 +42,6 @@ pub(crate) fn build_split_txs(
     params: &ContractParameters,
     outcome_build_output: &OutcomeTransactionBuildOutput,
 ) -> Result<SplitTransactionBuildOutput, Error> {
-    let players = params.sorted_players();
-
     let mut split_spend_infos = BTreeMap::<WinCondition, SplitSpendInfo>::new();
     let mut split_txs = BTreeMap::<Outcome, Transaction>::new();
 
@@ -74,7 +72,7 @@ pub(crate) fn build_split_txs(
         // payout_values is a btree, so outputs are automatically sorted by player.
         let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
         for (player_index, payout_value) in payout_values {
-            let &player = players.get(player_index).ok_or(Error)?;
+            let player = params.players.get(player_index).ok_or(Error)?;
             let split_spend_info = SplitSpendInfo::new(
                 player,
                 &params.market_maker,

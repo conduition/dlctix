@@ -17,7 +17,7 @@ use musig2::{CompactSignature, LiftedSignature, PartialSignature, PubNonce};
 use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use secp::{MaybeScalar, Point, Scalar};
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeMap;
 
 const P2TR_SCRIPT_PUBKEY_SIZE: usize = 34;
 
@@ -182,7 +182,7 @@ struct SimulatedPlayer {
 }
 
 impl SimulatedPlayer {
-    fn random<R: RngCore + CryptoRng>(rng: &mut R) -> SimulatedPlayer {
+    fn random<R: RngCore + CryptoRng>(rng: &mut R, index: PlayerIndex) -> SimulatedPlayer {
         let seckey = Scalar::random(rng);
         let payout_preimage = hashlock::preimage_random(rng);
         let ticket_preimage = hashlock::preimage_random(rng);
@@ -195,7 +195,7 @@ impl SimulatedPlayer {
                 ticket_hash: hashlock::sha256(&ticket_preimage),
                 payout_hash: hashlock::sha256(&payout_preimage),
             },
-            index: 0,
+            index,
         }
     }
 }
@@ -323,28 +323,17 @@ impl SimulationManager {
         let market_maker_address = p2tr_address(market_maker.pubkey);
 
         // players
-        let mut alice = SimulatedPlayer::random(&mut rng);
-        let mut bob = SimulatedPlayer::random(&mut rng);
-        let mut carol = SimulatedPlayer::random(&mut rng);
-        let mut dave = SimulatedPlayer::random(&mut rng);
+        let alice = SimulatedPlayer::random(&mut rng, 0);
+        let bob = SimulatedPlayer::random(&mut rng, 1);
+        let carol = SimulatedPlayer::random(&mut rng, 2);
+        let dave = SimulatedPlayer::random(&mut rng, 3);
 
-        let players = BTreeSet::from([
+        let players = vec![
             alice.player.clone(),
             bob.player.clone(),
             carol.player.clone(),
             dave.player.clone(),
-        ]);
-
-        let player_indexes: HashMap<Player, PlayerIndex> = players
-            .iter()
-            .enumerate()
-            .map(|(i, player)| (player.clone(), i))
-            .collect();
-
-        alice.index = player_indexes[&alice.player];
-        bob.index = player_indexes[&bob.player];
-        carol.index = player_indexes[&carol.player];
-        dave.index = player_indexes[&dave.player];
+        ];
 
         let rpc = new_rpc_client();
         let initial_block_height = rpc.get_block_count().unwrap();
@@ -1272,7 +1261,7 @@ fn stress_test() {
     let winners_per_outcome = 2;
 
     let simulated_players: Vec<SimulatedPlayer> = (0..n_players)
-        .map(|_| SimulatedPlayer::random(&mut rng))
+        .map(|i| SimulatedPlayer::random(&mut rng, i))
         .collect();
 
     // Oracle
@@ -1285,7 +1274,7 @@ fn stress_test() {
         pubkey: market_maker_seckey.base_point_mul(),
     };
 
-    let players: BTreeSet<Player> = simulated_players.iter().map(|p| p.player.clone()).collect();
+    let players: Vec<Player> = simulated_players.iter().map(|p| p.player.clone()).collect();
 
     let outcome_messages: Vec<Vec<u8>> = (0..n_outcomes)
         .map(|i| Vec::from((i as u32).to_be_bytes()))

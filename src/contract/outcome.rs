@@ -46,8 +46,6 @@ pub(crate) fn build_outcome_txs(
     params: &ContractParameters,
     funding_outpoint: OutPoint,
 ) -> Result<OutcomeTransactionBuildOutput, Error> {
-    let all_players = params.sorted_players();
-
     let funding_input = TxIn {
         previous_output: funding_outpoint,
         sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
@@ -61,7 +59,7 @@ pub(crate) fn build_outcome_txs(
         .map(|(&outcome, payout_map)| {
             let winners = payout_map.keys().copied();
             let spend_info = OutcomeSpendInfo::new(
-                &all_players,
+                &params.players,
                 winners,
                 &params.market_maker,
                 outcome_value,

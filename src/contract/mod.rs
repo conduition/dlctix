@@ -50,7 +50,7 @@ pub struct ContractParameters {
 
     /// The set of players in the DLC. Two players in the same DLC _may_ share
     /// the same public key, but MUST NOT share the same payout hash or ticket hash.
-    pub players: BTreeSet<Player>,
+    pub players: Vec<Player>,
 
     /// The event whose outcome determines the payouts.
     pub event: EventAnnouncement,
@@ -100,8 +100,7 @@ pub struct WinCondition {
     /// Indicates the outcome which would've been attested to by the oracle.
     pub outcome: Outcome,
     /// Indicates the particular player who would be paid out as a winner
-    /// in this outcome. Because outputs are sorted by player, this also
-    /// is the index of this player's output in the split transaction.
+    /// in this outcome.
     pub player_index: PlayerIndex,
 }
 
@@ -160,12 +159,6 @@ impl ContractParameters {
         }
 
         Ok(())
-    }
-
-    /// Return a sorted vector of players. Each player's index in this vector
-    /// should be used as an identifier for the DLC.
-    pub fn sorted_players<'a>(&'a self) -> Vec<&'a Player> {
-        self.players.iter().collect()
     }
 
     /// Returns the transaction output which the funding transaction should pay to.

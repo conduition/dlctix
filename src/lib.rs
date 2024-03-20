@@ -705,7 +705,7 @@ impl SignedContract {
         let winner = self
             .dlc
             .params
-            .sorted_players()
+            .players
             .get(win_cond.player_index)
             .cloned()
             .ok_or(Error)?;
@@ -1149,7 +1149,7 @@ impl SignedContract {
         let winner = self
             .dlc
             .params
-            .sorted_players()
+            .players
             .get(win_cond.player_index)
             .cloned()
             .ok_or(Error)?;

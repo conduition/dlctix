@@ -192,7 +192,7 @@ mod tests {
 
     use bitcoin::{Amount, FeeRate};
     use hex::ToHex;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     #[test]
     fn player_serialization() {
@@ -229,7 +229,7 @@ mod tests {
                     .parse()
                     .unwrap(),
             },
-            players: BTreeSet::from([
+            players: vec![
                 Player {
                     pubkey: secp::Scalar::try_from(10).unwrap() * secp::G,
                     ticket_hash: [10; 32],
@@ -240,7 +240,7 @@ mod tests {
                     ticket_hash: [30; 32],
                     payout_hash: [40; 32],
                 },
-            ]),
+            ],
             event: EventAnnouncement {
                 oracle_pubkey: "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7"
                     .parse()
@@ -278,14 +278,14 @@ mod tests {
   },
   "players": [
     {
-      "pubkey": "03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
-      "ticket_hash": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
-      "payout_hash": "2828282828282828282828282828282828282828282828282828282828282828"
-    },
-    {
       "pubkey": "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
       "ticket_hash": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
       "payout_hash": "1414141414141414141414141414141414141414141414141414141414141414"
+    },
+    {
+      "pubkey": "03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+      "ticket_hash": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+      "payout_hash": "2828282828282828282828282828282828282828282828282828282828282828"
     }
   ],
   "event": {
