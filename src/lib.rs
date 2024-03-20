@@ -16,6 +16,7 @@ pub(crate) mod spend_info;
 
 pub mod hashlock;
 
+pub use bitcoin;
 pub use musig2;
 pub use secp;
 
