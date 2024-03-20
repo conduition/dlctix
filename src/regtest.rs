@@ -6,7 +6,7 @@ use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi
 use serial_test::serial;
 
 use bitcoin::{
-    blockdata::transaction::{predict_weight, InputWeightPrediction},
+    blockdata::transaction::predict_weight,
     hashes::Hash,
     key::TweakedPublicKey,
     locktime::absolute::LockTime,
@@ -791,7 +791,7 @@ fn ticketed_dlc_individual_sellback() {
             script_pubkey: manager.script_pubkey_market_maker(),
             value: {
                 let close_tx_weight = predict_weight(
-                    [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
+                    [manager.contract.close_tx_input_weight()],
                     [P2TR_SCRIPT_PUBKEY_SIZE],
                 );
                 let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
@@ -856,7 +856,7 @@ fn ticketed_dlc_all_winners_cooperate() {
             script_pubkey: manager.script_pubkey_market_maker(),
             value: {
                 let close_tx_weight = predict_weight(
-                    [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
+                    [manager.contract.close_tx_input_weight()],
                     [P2TR_SCRIPT_PUBKEY_SIZE],
                 );
                 let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
@@ -997,7 +997,7 @@ fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_contract_expiry_with_on_chain_resolution() {
+fn ticketed_dlc_contract_expiry_on_chain_resolution() {
     let manager = SimulationManager::new();
 
     // The contract expires, paying out to dave.
@@ -1131,7 +1131,7 @@ fn ticketed_dlc_contract_expiry_with_on_chain_resolution() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_contract_expiry_cooperative_close() {
+fn ticketed_dlc_contract_expiry_all_winners_cooperate() {
     let manager = SimulationManager::new();
 
     // The contract expires, paying out to dave.
@@ -1174,7 +1174,7 @@ fn ticketed_dlc_contract_expiry_cooperative_close() {
             script_pubkey: manager.script_pubkey_market_maker(),
             value: {
                 let close_tx_weight = predict_weight(
-                    [InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH],
+                    [manager.contract.close_tx_input_weight()],
                     [P2TR_SCRIPT_PUBKEY_SIZE],
                 );
                 let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
@@ -1200,6 +1200,64 @@ fn ticketed_dlc_contract_expiry_cooperative_close() {
         .rpc
         .send_raw_transaction(&close_tx)
         .expect("failed to broadcast outcome close TX");
+}
+
+#[test]
+#[serial]
+fn ticketed_dlc_all_players_cooperate() {
+    let manager = SimulationManager::new();
+
+    // The oracle attests to outcome 0, paying out to Alice Bob and Carol.
+    // Alice, Bob, Carol, and Dave all cooperate.
+    //
+    // Alice, Bob and Carol sell their payout preimages to the market maker,
+    // and surrender their secret signing keys once they receive the payout.
+    // Dave stands to earn nothing, so he surrenders his private key immediately.
+    // The market maker can now sweep the funding output back to his control.
+    // This is the most efficient on-chain recovery path possible.
+    //
+    // It is possible for one of the players to publish the split TX, which
+    // double spends the funding TX, but even if the split TX is confirmed,
+    // the market maker can then immediately sweep the output of the split TX anyway.
+    let (close_tx_input, close_tx_prevout) = manager.contract.funding_close_tx_input_and_prevout();
+    let mut close_tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![close_tx_input],
+        output: vec![TxOut {
+            script_pubkey: manager.script_pubkey_market_maker(),
+            value: {
+                let close_tx_weight = predict_weight(
+                    [manager.contract.close_tx_input_weight()],
+                    [P2TR_SCRIPT_PUBKEY_SIZE],
+                );
+                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                close_tx_prevout.value - fee
+            },
+        }],
+    };
+
+    manager
+        .contract
+        .sign_funding_close_tx_input(
+            &mut close_tx,
+            0, // input index
+            &Prevouts::All(&[close_tx_prevout]),
+            manager.market_maker_seckey,
+            &BTreeMap::from([
+                (manager.alice.player.pubkey, manager.alice.seckey),
+                (manager.bob.player.pubkey, manager.bob.seckey),
+                (manager.carol.player.pubkey, manager.carol.seckey),
+                (manager.dave.player.pubkey, manager.dave.seckey),
+            ]),
+        )
+        .expect("failed to sign funding close TX");
+
+    // The close TX can be broadcast immediately.
+    manager
+        .rpc
+        .send_raw_transaction(&close_tx)
+        .expect("failed to broadcast funding close TX");
 }
 
 // This stress-test confirms that signing large ticketed DLCs is plausible,

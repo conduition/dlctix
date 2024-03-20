@@ -745,6 +745,19 @@ impl SignedContract {
         Ok(split_tx)
     }
 
+    /// Returns prevout information for the market maker to create and sign a
+    /// funding-close transaction.
+    ///
+    /// See [SignedContract::sign_funding_close_tx_input] for more info on the funding-close TX.
+    pub fn funding_close_tx_input_and_prevout(&self) -> (TxIn, TxOut) {
+        let input = TxIn {
+            previous_output: self.dlc.funding_outpoint(),
+            ..TxIn::default()
+        };
+        let prevout = self.dlc.funding_output();
+        (input, prevout)
+    }
+
     /// Returns prevout information for the market maker to create and sign an
     /// outcome-reclaim transaction.
     ///
@@ -886,14 +899,16 @@ impl SignedContract {
             .input_weight_for_sellback_tx()
     }
 
-    /// Returns an input weight prediction value for the witnessed input of a split-close TX.
-    /// All split-close TX inputs have the same weight, which is
+    /// Returns an input weight prediction value for the witnessed input of a close TX (any close TX).
+    /// All close TX inputs have the same weight, which is
     /// [`InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH`].
     ///
+    /// See [SignedContract::sign_funding_close_tx_input] for more info on the funding-close TX.
+    /// See [SignedContract::sign_outcome_close_tx_input] for more info on the outcome-close TX.
     /// See [SignedContract::sign_split_close_tx_input] for more info on the split-close TX.
     ///
     /// TODO: this should be a constant alias.
-    pub fn split_close_tx_input_weight(&self) -> InputWeightPrediction {
+    pub fn close_tx_input_weight(&self) -> InputWeightPrediction {
         InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH
     }
 
@@ -964,6 +979,61 @@ impl SignedContract {
             prevouts,
             market_maker_secret_key,
         )
+    }
+
+    /// Sign a cooperative closing transaction which spends the funding transaction output
+    /// back to the market maker's control.
+    ///
+    /// The funding-close TX should be used if all ticket-bearing winners have been paid
+    /// out-of-band, and all players including non-winners are cooperative. Once the winners
+    /// have their payouts, they can send their secret keys to the market maker to let him
+    /// reclaim all the on-chain capital. Non-winners, once they realize they are not
+    /// in a position to earn any money from the DLC, can surrender their secret keys to
+    /// the market maker to cooperate and thereby enable the most efficient possible on-chain
+    /// resolution of the DLC.
+    ///
+    /// The market maker can only publish a funding-close TX once all players including non-winners
+    /// have given the market maker their secret keys, which they should only do if they have been
+    /// paid out completely, or won't be paid out ever.
+    pub fn sign_funding_close_tx_input<T: Borrow<TxOut>>(
+        &self,
+        close_tx: &mut Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: impl Into<Scalar>,
+        player_secret_keys: &BTreeMap<Point, Scalar>,
+    ) -> Result<(), Error> {
+        let market_maker_secret_key = market_maker_secret_key.into();
+        if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
+            return Err(Error);
+        }
+
+        // Confirm we're signing the correct input
+        let (mut expected_input, expected_prevout) = self.funding_close_tx_input_and_prevout();
+
+        // The caller can use whatever sequence they want.
+        expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
+
+        check_input_matches_expected(
+            close_tx,
+            prevouts,
+            input_index,
+            &expected_input,
+            &expected_prevout,
+        )?;
+
+        let funding_spend_info = self.dlc.outcome_tx_build.funding_spend_info();
+
+        let witness = funding_spend_info.witness_tx_close(
+            close_tx,
+            input_index,
+            prevouts,
+            market_maker_secret_key,
+            player_secret_keys,
+        )?;
+
+        close_tx.input[input_index].witness = witness;
+        Ok(())
     }
 
     /// Sign a cooperative closing transaction which spends the outcome transaction output

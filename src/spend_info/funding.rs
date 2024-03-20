@@ -1,14 +1,16 @@
 use bitcoin::{
     sighash::{Prevouts, SighashCache},
-    Amount, ScriptBuf, TapSighash, TapSighashType, Transaction, TxOut,
+    Amount, ScriptBuf, TapSighash, TapSighashType, Transaction, TxOut, Witness,
 };
-use musig2::KeyAggContext;
-use secp::Point;
+use musig2::{CompactSignature, KeyAggContext};
+use secp::{Point, Scalar};
 
 use crate::{
     errors::Error,
     parties::{MarketMaker, Player},
 };
+
+use std::{borrow::Borrow, collections::BTreeMap};
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct FundingSpendInfo {
@@ -71,5 +73,44 @@ impl FundingSpendInfo {
             &Prevouts::All(&funding_prevouts),
             TapSighashType::Default,
         )
+    }
+
+    /// Derive the witness for a cooperative closing transaction which spends from
+    /// the funding transaction. The market maker must provide the secret keys
+    /// for all of the winning players involved in the whole DLC.
+    pub(crate) fn witness_tx_close<T: Borrow<TxOut>>(
+        &self,
+        close_tx: &Transaction,
+        input_index: usize,
+        prevouts: &Prevouts<T>,
+        market_maker_secret_key: Scalar,
+        player_secret_keys: &BTreeMap<Point, Scalar>,
+    ) -> Result<Witness, Error> {
+        let mm_pubkey = market_maker_secret_key.base_point_mul();
+        let sighash = SighashCache::new(close_tx).taproot_key_spend_signature_hash(
+            input_index,
+            prevouts,
+            TapSighashType::Default,
+        )?;
+
+        let ordered_seckeys: Vec<Scalar> = self
+            .key_agg_ctx
+            .pubkeys()
+            .into_iter()
+            .map(|&pubkey| {
+                if pubkey == mm_pubkey {
+                    Ok(market_maker_secret_key)
+                } else {
+                    player_secret_keys.get(&pubkey).ok_or(Error).copied()
+                }
+            })
+            .collect::<Result<_, Error>>()?;
+
+        let group_seckey: Scalar = self.key_agg_ctx.aggregated_seckey(ordered_seckeys)?;
+
+        let signature: CompactSignature = musig2::deterministic::sign_solo(group_seckey, sighash);
+
+        let witness = Witness::from_slice(&[signature.serialize()]);
+        Ok(witness)
     }
 }
