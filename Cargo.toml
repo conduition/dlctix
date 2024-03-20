@@ -1,6 +1,3 @@
-[workspace]
-members = ["demo/mm_server", "demo/player_client"]
-
 [package]
 name = "dlctix"
 version = "0.0.5"
