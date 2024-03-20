@@ -8,6 +8,7 @@ use crate::serialization;
 /// who wishes to profit by leveraging their capital.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarketMaker {
+    /// The market maker's pubkey.
     pub pubkey: Point,
 }
 

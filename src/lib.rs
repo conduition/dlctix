@@ -1,6 +1,7 @@
 //! Crate documentation is TODO.
 //!
 //! See [the Github README](https://github.com/conduition/dlctix).
+#![warn(missing_docs)]
 
 #[cfg(test)]
 mod regtest;
@@ -142,6 +143,8 @@ impl SigningSessionState for NonceSharingRound {}
 impl SigningSessionState for PartialSignatureSharingRound {}
 
 /// This is a state machine to manage signing the various transactions in a [`TicketedDLC`].
+/// The generic parameter `S` determines which of the two stages of the signing session
+/// we are in.
 pub struct SigningSession<S: SigningSessionState> {
     dlc: TicketedDLC,
     our_public_key: Point,
@@ -172,12 +175,8 @@ impl SigningSession<NonceSharingRound> {
 
         let base_sigmap = dlc.params.sigmap_for_pubkey(our_public_key).ok_or(Error)?;
 
-        let our_secret_nonces = base_sigmap.map_values(|_| {
-            SecNonce::build(&mut rng)
-                .with_seckey(signing_key)
-                // .with_extra_info(&self.dlc.params.serialize()) // TODO
-                .build()
-        });
+        let our_secret_nonces =
+            base_sigmap.map_values(|_| SecNonce::build(&mut rng).with_seckey(signing_key).build());
 
         let our_public_nonces = our_secret_nonces
             .by_ref()
@@ -659,6 +658,10 @@ impl SignedContract {
         Ok(split_tx)
     }
 
+    /// Returns prevout information for the market maker to create and sign an
+    /// outcome-reclaim transaction.
+    ///
+    /// See [SignedContract::sign_outcome_reclaim_tx_input] for more info on the outcome-reclaim TX.
     pub fn outcome_reclaim_tx_input_and_prevout<'a>(
         &'a self,
         outcome: &Outcome,
@@ -670,6 +673,10 @@ impl SignedContract {
         )
     }
 
+    /// Returns prevout information for the market maker to create and sign an
+    /// outcome-close transaction.
+    ///
+    /// See [SignedContract::sign_outcome_close_tx_input] for more info on the outcome-close TX.
     pub fn outcome_close_tx_input_and_prevout<'a>(
         &'a self,
         outcome: &Outcome,
@@ -677,6 +684,9 @@ impl SignedContract {
         contract::outcome::outcome_tx_prevout(&self.dlc.outcome_tx_build, outcome, 0)
     }
 
+    /// Returns prevout information for a player to create and sign a split-win transaction.
+    ///
+    /// See [SignedContract::sign_split_win_tx_input] for more info on the split-win TX.
     pub fn split_win_tx_input_and_prevout<'a>(
         &'a self,
         win_cond: &WinCondition,
@@ -689,6 +699,10 @@ impl SignedContract {
         )
     }
 
+    /// Returns prevout information for the market maker to create and sign a split-reclaim
+    /// transaction.
+    ///
+    /// See [SignedContract::sign_split_reclaim_tx_input] for more info on the split-reclaim TX.
     pub fn split_reclaim_tx_input_and_prevout<'a>(
         &'a self,
         win_cond: &WinCondition,
@@ -701,6 +715,10 @@ impl SignedContract {
         )
     }
 
+    /// Returns prevout information for the market maker to create and sign a
+    /// split-sellback transaction.
+    ///
+    /// See [SignedContract::sign_split_sellback_tx_input] for more info on the split-sellback TX.
     pub fn split_sellback_tx_input_and_prevout<'a>(
         &'a self,
         win_cond: &WinCondition,
@@ -708,6 +726,10 @@ impl SignedContract {
         contract::split::split_tx_prevout(&self.dlc.params, &self.dlc.split_tx_build, win_cond, 0)
     }
 
+    /// Returns prevout information for the market maker to create and sign a
+    /// split-close transaction.
+    ///
+    /// See [SignedContract::sign_split_close_tx_input] for more info on the split-close TX.
     pub fn split_close_tx_input_and_prevout<'a>(
         &'a self,
         win_cond: &WinCondition,
@@ -715,6 +737,10 @@ impl SignedContract {
         contract::split::split_tx_prevout(&self.dlc.params, &self.dlc.split_tx_build, win_cond, 0)
     }
 
+    /// Returns an input weight prediction value for the witnessed input of an
+    /// outcome-reclaim TX, which reclaims funds from the given outcome's outcome TX.
+    ///
+    /// See [SignedContract::sign_outcome_reclaim_tx_input] for more info on the outcome-reclaim TX.
     pub fn outcome_reclaim_tx_input_weight(
         &self,
         outcome: &Outcome,
@@ -726,8 +752,11 @@ impl SignedContract {
             .map(|outcome_spend_info| outcome_spend_info.input_weight_for_reclaim_tx())
     }
 
+    /// Returns an input weight prediction value for the witnessed input of a split-win TX.
+    /// All split-win TX inputs have the same weight.
+    ///
+    /// See [SignedContract::sign_split_win_tx_input] for more info on the split-win TX.
     pub fn split_win_tx_input_weight(&self) -> InputWeightPrediction {
-        // All win TXs have the same input weight.
         self.dlc
             .split_tx_build
             .split_spend_infos()
@@ -737,6 +766,12 @@ impl SignedContract {
             .input_weight_for_win_tx()
     }
 
+    /// Returns an input weight prediction value for the witnessed input of a split-reclaim TX.
+    /// All split-reclaim TX inputs have the same weight.
+    ///
+    /// See [SignedContract::sign_split_reclaim_tx_input] for more info on the split-reclaim TX.
+    ///
+    /// TODO: this should be a constant covered by tests.
     pub fn split_reclaim_tx_input_weight(&self) -> InputWeightPrediction {
         // All reclaim TXs have the same input weight.
         self.dlc
@@ -748,8 +783,13 @@ impl SignedContract {
             .input_weight_for_reclaim_tx()
     }
 
+    /// Returns an input weight prediction value for the witnessed input of a split-sellback TX.
+    /// All split-sellback TX inputs have the same weight.
+    ///
+    /// See [SignedContract::sign_split_sellback_tx_input] for more info on the split-sellback TX.
+    ///
+    /// TODO: this should be a constant covered by tests.
     pub fn split_sellback_tx_input_weight(&self) -> InputWeightPrediction {
-        // All sellback TXs have the same input weight.
         self.dlc
             .split_tx_build
             .split_spend_infos()
@@ -757,6 +797,17 @@ impl SignedContract {
             .next()
             .unwrap()
             .input_weight_for_sellback_tx()
+    }
+
+    /// Returns an input weight prediction value for the witnessed input of a split-close TX.
+    /// All split-close TX inputs have the same weight, which is
+    /// [`InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH`].
+    ///
+    /// See [SignedContract::sign_split_close_tx_input] for more info on the split-close TX.
+    ///
+    /// TODO: this should be a constant alias.
+    pub fn split_close_tx_input_weight(&self) -> InputWeightPrediction {
+        InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH
     }
 
     pub(crate) fn unchecked_sign_outcome_reclaim_tx_input<T: Borrow<TxOut>>(
@@ -785,6 +836,16 @@ impl SignedContract {
         Ok(())
     }
 
+    /// Sign an outcome-reclaim transaction which spends the outcome TX output to the control
+    /// of the market maker.
+    ///
+    /// The outcome-reclaim TX should be used if none of the outcome winners purchased their ticket
+    /// preimage, and so the market maker can reclaim his money before the split transaction
+    /// splits it into multiple smaller UTXOs.
+    ///
+    /// The market maker can only publish an outcome-reclaim TX once the outcome transaction has at
+    /// least [`2 * relative_locktime_block_delta`][ContractParameters::relative_locktime_block_delta]
+    /// confirmations.
     pub fn sign_outcome_reclaim_tx_input<T: Borrow<TxOut>>(
         &self,
         outcome: &Outcome,
@@ -818,11 +879,20 @@ impl SignedContract {
         )
     }
 
-    /// Sign a cooperative closing transaction which spends the outcome transaction output.
+    /// Sign a cooperative closing transaction which spends the outcome transaction output
+    /// back to the market maker's control.
+    ///
+    /// The outcome-close TX should be used when all outcome winners purchased their ticket
+    /// preimage, and the market maker has paid each winner their winnings out-of-band.
+    ///
     /// The market maker can use this method once they have issued off-chain payouts to
     /// all winning players for an outcome. Once the players have their payouts, they can
     /// send their secret keys to the market maker to let him reclaim all the on-chain
     /// capital.
+    ///
+    /// The market maker can only publish an outcome-close TX once all winning players have
+    /// given the market maker their secret keys, which they should only do if they have been
+    /// paid out completely.
     pub fn sign_outcome_close_tx_input<T: Borrow<TxOut>>(
         &self,
         outcome: &Outcome,
@@ -899,6 +969,17 @@ impl SignedContract {
         Ok(())
     }
 
+    /// Sign a transaction which spends a split transaction output to the control of a player
+    /// who must know their ticket preimage.
+    ///
+    /// The split-win TX should be used by a player to enforce the outcome payout on-chain.
+    /// Ideally, players would be paid out off-chain or using cross-chain HTLCs. However,
+    /// the split-win TX is the fallback option which guarantees a player receives a majority
+    /// of their payout (minus mining fees).
+    ///
+    /// The player can only publish a split-win TX once the split transaction has at
+    /// least [`relative_locktime_block_delta`][ContractParameters::relative_locktime_block_delta]
+    /// confirmations.
     pub fn sign_split_win_tx_input<T: Borrow<TxOut>>(
         &self,
         win_cond: &WinCondition,
@@ -969,6 +1050,15 @@ impl SignedContract {
         Ok(())
     }
 
+    /// Signs a transaction which spends a split transaction output to the market
+    /// maker's control.
+    ///
+    /// The split-reclaim TX should be used by the market maker if a specific player did not
+    /// buy their ticket preimage, and so the market maker can reclaim the winnings himself.
+    ///
+    /// The market maker can only publish a split-reclaim TX once the split transaction has at
+    /// least [`2 * relative_locktime_block_delta`][ContractParameters::relative_locktime_block_delta]
+    /// confirmations.
     pub fn sign_split_reclaim_tx_input<T: Borrow<TxOut>>(
         &self,
         win_cond: &WinCondition,
@@ -1002,6 +1092,21 @@ impl SignedContract {
         )
     }
 
+    /// Signs a transaction which spends a split transaction output to the market
+    /// maker's control.
+    ///
+    /// A split-sellback TX should be used when an outcome winner purchased their ticket
+    /// preimage, and the market maker has paid the winner their winnings out-of-band in
+    /// exchange for the player's payout preimage.
+    ///
+    /// The market maker can only publish a split-sellback TX once a player has given
+    /// the market maker their payout preimage, which they should only do if they have been
+    /// paid out completely.
+    ///
+    /// The only distinction between a split-sellback and a split-close TX is whether the
+    /// market maker has been given the player's signing key. If so, then the market maker
+    /// should use the split-close TX because it is more efficient and private than the
+    /// split-sellback TX.
     pub fn sign_split_sellback_tx_input<T: Borrow<TxOut>>(
         &self,
         win_cond: &WinCondition,
@@ -1051,9 +1156,22 @@ impl SignedContract {
     }
 
     /// Sign a cooperative closing transaction which spends a player's split transaction output.
+    ///
+    /// The split-close TX should be used when an outcome winner purchased their ticket
+    /// preimage, and the market maker has paid the winner their winnings out-of-band.
+    ///
     /// The market maker can use this method once they have issued off-chain payouts to this
-    /// winning player. Once the player has her off-chain payout, they can send their secret
+    /// winning player. Once the player has her off-chain payout, she can send their secret
     /// key to the market maker to let him reclaim all the on-chain capital efficiently.
+    ///
+    /// The market maker can only publish a split-close TX once a player has given
+    /// the market maker their secret key, which they should only do if they have been
+    /// paid out completely.
+    ///
+    /// The only distinction between a split-sellback and a split-close TX is whether the
+    /// market maker has been given the player's signing key. If so, then the market maker
+    /// should use the split-close TX because it is more efficient and private than the
+    /// split-sellback TX.
     pub fn sign_split_close_tx_input<T: Borrow<TxOut>>(
         &self,
         win_cond: &WinCondition,

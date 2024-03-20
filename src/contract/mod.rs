@@ -97,7 +97,11 @@ pub enum Outcome {
 /// Points to a situation where a player wins a payout from the DLC.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct WinCondition {
+    /// Indicates the outcome which would've been attested to by the oracle.
     pub outcome: Outcome,
+    /// Indicates the particular player who would be paid out as a winner
+    /// in this outcome. Because outputs are sorted by player, this also
+    /// is the index of this player's output in the split transaction.
     pub player_index: PlayerIndex,
 }
 
@@ -297,6 +301,8 @@ impl ContractParameters {
         Some(win_conditions_to_sign)
     }
 
+    /// Return a blank [`SigMap`] illustrating the different outcomes and
+    /// win conditions which a given pubkey should sign.
     pub fn sigmap_for_pubkey(&self, pubkey: Point) -> Option<SigMap<()>> {
         let win_conditions = self.win_conditions_controlled_by_pubkey(pubkey)?;
         let sigmap = SigMap {
@@ -346,11 +352,16 @@ impl ContractParameters {
 /// outcome transaction, and for different [`WinCondition`]s within each split transaction.
 #[derive(Debug, Clone, Eq, PartialEq, Default, Serialize, Deserialize)]
 pub struct SigMap<T> {
+    /// Corresponds to the set of outcome transactions which the player needs to sign.
     pub by_outcome: BTreeMap<Outcome, T>,
+    /// Corresponds to the set of split transaction spending conditions which the
+    /// player needs to sign.
     pub by_win_condition: BTreeMap<WinCondition, T>,
 }
 
 impl<T> SigMap<T> {
+    /// Map each outcome and win condition to values of a specific type using
+    /// distinct map functions.
     pub fn map<V, F1, F2>(self, map_outcomes: F1, map_win_conditions: F2) -> SigMap<V>
     where
         F1: Fn(Outcome, T) -> V,
@@ -370,6 +381,7 @@ impl<T> SigMap<T> {
         }
     }
 
+    /// Map each outcome and win condition to values of a specific type.
     pub fn map_values<V, F>(self, mut map_fn: F) -> SigMap<V>
     where
         F: FnMut(T) -> V,
@@ -388,6 +400,7 @@ impl<T> SigMap<T> {
         }
     }
 
+    /// Return a `SigMap` which contains references to the values held by this `SigMap`.
     pub fn by_ref(&self) -> SigMap<&T> {
         SigMap {
             by_outcome: self.by_outcome.iter().map(|(&k, v)| (k, v)).collect(),

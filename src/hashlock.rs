@@ -1,3 +1,6 @@
+//! This module contains utilities for constructing LN-compatible preimages
+//! and SHA256 hashes.
+
 use sha2::Digest as _;
 
 /// The size for ticket preimages.

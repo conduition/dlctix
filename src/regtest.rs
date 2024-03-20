@@ -1,3 +1,5 @@
+//! This module contains integration tests which leverage a remote Bitcoin regtest node.
+
 use crate::*;
 
 use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi};
