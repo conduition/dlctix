@@ -7,13 +7,14 @@ use serial_test::serial;
 
 use bitcoin::{
     blockdata::transaction::{predict_weight, InputWeightPrediction},
+    hashes::Hash,
     key::TweakedPublicKey,
     locktime::absolute::LockTime,
     sighash::{Prevouts, SighashCache, TapSighashType},
     Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
 };
 use musig2::{CompactSignature, LiftedSignature, PartialSignature, PubNonce};
-use rand::{CryptoRng, RngCore};
+use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use secp::{MaybeScalar, Point, Scalar};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1199,4 +1200,82 @@ fn ticketed_dlc_contract_expiry_cooperative_close() {
         .rpc
         .send_raw_transaction(&close_tx)
         .expect("failed to broadcast outcome close TX");
+}
+
+// This stress-test confirms that signing large ticketed DLCs is plausible,
+// if computationally expensive.
+#[test]
+fn stress_test() {
+    let mut rng = rand::rngs::StdRng::from_seed([0; 32]);
+
+    // Stress-testing parameters.
+    let n_players = 50;
+    let n_outcomes = 50;
+    let winners_per_outcome = 2;
+
+    let simulated_players: Vec<SimulatedPlayer> = (0..n_players)
+        .map(|_| SimulatedPlayer::random(&mut rng))
+        .collect();
+
+    // Oracle
+    let oracle_seckey = Scalar::random(&mut rng);
+    let oracle_secnonce = Scalar::random(&mut rng);
+
+    // Market maker
+    let market_maker_seckey = Scalar::random(&mut rng);
+    let market_maker = MarketMaker {
+        pubkey: market_maker_seckey.base_point_mul(),
+    };
+
+    let players: BTreeSet<Player> = simulated_players.iter().map(|p| p.player.clone()).collect();
+
+    let outcome_messages: Vec<Vec<u8>> = (0..n_outcomes)
+        .map(|i| Vec::from((i as u32).to_be_bytes()))
+        .collect();
+
+    // Generate random payouts with 4 winners per outcome
+    let outcome_payouts: BTreeMap<Outcome, PayoutWeights> = (0..n_outcomes)
+        .map(|i| {
+            let outcome = Outcome::Attestation(i);
+            let payout_map = (0..winners_per_outcome)
+                .map(|_| {
+                    let player_index: PlayerIndex = rng.gen_range(0..n_players);
+                    (player_index, 1)
+                })
+                .collect();
+
+            (outcome, payout_map)
+        })
+        .collect();
+
+    let contract_params = ContractParameters {
+        market_maker,
+        players,
+        event: EventAnnouncement {
+            oracle_pubkey: oracle_seckey.base_point_mul(),
+            nonce_point: oracle_secnonce.base_point_mul(),
+            outcome_messages,
+            expiry: None,
+        },
+        outcome_payouts,
+        fee_rate: FeeRate::from_sat_per_vb_unchecked(50),
+        funding_value: FUNDING_VALUE,
+        relative_locktime_block_delta: 25,
+    };
+
+    let funding_outpoint = OutPoint {
+        txid: bitcoin::Txid::from_byte_array([0; 32]),
+        vout: 0,
+    };
+
+    // Construct all the DLC transactions.
+    let ticketed_dlc = TicketedDLC::new(contract_params, funding_outpoint)
+        .expect("failed to constructed ticketed DLC transactions");
+
+    // Sign all the transactions.
+    let seckeys = simulated_players
+        .iter()
+        .map(|p| p.seckey)
+        .chain([market_maker_seckey]);
+    let _ = musig_sign_ticketed_dlc(&ticketed_dlc, seckeys, &mut rng, false);
 }
