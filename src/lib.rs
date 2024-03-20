@@ -132,15 +132,25 @@ pub struct NonceSharingRound {
 }
 
 /// A [`SigningSessionState`] state for the second signature-sharing
-/// round of communication.
-pub struct PartialSignatureSharingRound {
+/// round of communication used by the signing coordinator (usually
+/// this would be the market maker).
+pub struct CoordinatorPartialSignatureSharingRound {
     received_nonces: BTreeMap<Point, SigMap<PubNonce>>,
     aggregated_nonces: SigMap<AggNonce>,
     our_partial_signatures: SigMap<PartialSignature>,
 }
 
+/// A [`SigningSessionState`] state for the second signature-sharing
+/// round of communication used by individual signing contributors.
+/// Usually this would be used by a player.
+pub struct ContributorPartialSignatureSharingRound {
+    aggregated_nonces: SigMap<AggNonce>,
+    our_partial_signatures: SigMap<PartialSignature>,
+}
+
 impl SigningSessionState for NonceSharingRound {}
-impl SigningSessionState for PartialSignatureSharingRound {}
+impl SigningSessionState for CoordinatorPartialSignatureSharingRound {}
+impl SigningSessionState for ContributorPartialSignatureSharingRound {}
 
 /// This is a state machine to manage signing the various transactions in a [`TicketedDLC`].
 /// The generic parameter `S` determines which of the two stages of the signing session
@@ -199,19 +209,21 @@ impl SigningSession<NonceSharingRound> {
         &self.state.our_public_nonces
     }
 
-    /// Receive the nonces from all other signers and construct our set of partial
-    /// signatures. This begins the `PartialSignatureSharingRound` of the `SigningSession`.
-    pub fn compute_partial_signatures(
+    /// Receive the nonces from all other signers and aggregate them into a full set
+    /// of aggregated nonces for every signing path. The aggnonces are then used to
+    /// compute our own partial signatures. Both are stored in the resulting
+    /// `SigningSession`.
+    pub fn aggregate_nonces_and_compute_partial_signatures(
         self,
         mut received_nonces: BTreeMap<Point, SigMap<PubNonce>>,
-    ) -> Result<SigningSession<PartialSignatureSharingRound>, Error> {
+    ) -> Result<SigningSession<CoordinatorPartialSignatureSharingRound>, Error> {
         // Insert our own public nonces so that callers don't need
         // to inject them manually.
         received_nonces.insert(self.our_public_key, self.state.our_public_nonces);
 
         validate_sigmaps_completeness(&self.dlc.params, &received_nonces)?;
 
-        let aggregated_nonces: SigMap<AggNonce> = self.dlc.params.full_sigmap().map(
+        let aggregated_nonces = self.dlc.params.full_sigmap().map(
             |outcome, _| {
                 received_nonces
                     .values()
@@ -244,11 +256,46 @@ impl SigningSession<NonceSharingRound> {
             )?,
         };
 
+        let coordinator_session = SigningSession {
+            dlc: self.dlc,
+            our_public_key: self.our_public_key,
+            state: CoordinatorPartialSignatureSharingRound {
+                received_nonces,
+                aggregated_nonces,
+                our_partial_signatures,
+            },
+        };
+        Ok(coordinator_session)
+    }
+
+    /// Receive the nonces from all other signers and construct our set of partial
+    /// signatures. This begins the `ContributorPartialSignatureSharingRound` of the `SigningSession`.
+    pub fn compute_partial_signatures(
+        self,
+        aggregated_nonces: SigMap<AggNonce>,
+    ) -> Result<SigningSession<ContributorPartialSignatureSharingRound>, Error> {
+        let our_partial_signatures = SigMap {
+            by_outcome: contract::outcome::partial_sign_outcome_txs(
+                &self.dlc.params,
+                &self.dlc.outcome_tx_build,
+                self.state.signing_key,
+                self.state.our_secret_nonces.by_outcome,
+                &aggregated_nonces.by_outcome,
+            )?,
+            by_win_condition: contract::split::partial_sign_split_txs(
+                &self.dlc.params,
+                &self.dlc.outcome_tx_build,
+                &self.dlc.split_tx_build,
+                self.state.signing_key,
+                self.state.our_secret_nonces.by_win_condition,
+                &aggregated_nonces.by_win_condition,
+            )?,
+        };
+
         let session = SigningSession {
             dlc: self.dlc,
             our_public_key: self.our_public_key,
-            state: PartialSignatureSharingRound {
-                received_nonces,
+            state: ContributorPartialSignatureSharingRound {
                 aggregated_nonces,
                 our_partial_signatures,
             },
@@ -257,7 +304,7 @@ impl SigningSession<NonceSharingRound> {
     }
 }
 
-impl SigningSession<PartialSignatureSharingRound> {
+impl SigningSession<CoordinatorPartialSignatureSharingRound> {
     /// Returns the set of partial signatures which should be shared
     /// with our signing peers.
     pub fn our_partial_signatures(&self) -> &SigMap<PartialSignature> {
@@ -304,6 +351,46 @@ impl SigningSession<PartialSignatureSharingRound> {
         )?;
 
         Ok(())
+    }
+
+    /// Unwrap the coordinator's session into a regular peer's signing session.
+    pub fn into_inner(self) -> SigningSession<ContributorPartialSignatureSharingRound> {
+        SigningSession {
+            dlc: self.dlc,
+            our_public_key: self.our_public_key,
+            state: ContributorPartialSignatureSharingRound {
+                aggregated_nonces: self.state.aggregated_nonces,
+                our_partial_signatures: self.state.our_partial_signatures,
+            },
+        }
+    }
+
+    /// Combine all the partial signatures received from peers. Assumes all signature sets have
+    /// been verified individually using [`verify_partial_signatures`][Self::verify_partial_signatures].
+    /// The aggregated signatures will still be verified before this method returns, but not in
+    /// a way that blame can be properly placed on erroneous peer signatures.
+    ///
+    /// This completes the signing session.
+    pub fn aggregate_all_signatures(
+        self,
+        received_signatures: BTreeMap<Point, SigMap<PartialSignature>>,
+    ) -> Result<SignedContract, Error> {
+        self.into_inner()
+            .aggregate_all_signatures(received_signatures)
+    }
+}
+
+impl SigningSession<ContributorPartialSignatureSharingRound> {
+    /// Returns the set of partial signatures which should be shared
+    /// with our signing peers.
+    pub fn our_partial_signatures(&self) -> &SigMap<PartialSignature> {
+        &self.state.our_partial_signatures
+    }
+
+    /// Returns the set of aggregated nonces which should be sent to
+    /// our signing peers if they don't already have them.
+    pub fn aggregated_nonces(&self) -> &SigMap<AggNonce> {
+        &self.state.aggregated_nonces
     }
 
     /// Combine all the partial signatures received from peers. Assumes all signature sets have

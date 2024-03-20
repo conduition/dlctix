@@ -206,8 +206,9 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
     ticketed_dlc: &TicketedDLC,
     all_seckeys: impl IntoIterator<Item = Scalar>,
     rng: &mut R,
+    verify_all_partial_signatures: bool,
 ) -> SignedContract {
-    let signing_sessions: BTreeMap<Point, SigningSession<NonceSharingRound>> = all_seckeys
+    let mut signing_sessions: BTreeMap<Point, SigningSession<NonceSharingRound>> = all_seckeys
         .into_iter()
         .map(|seckey| {
             let session = SigningSession::new(ticketed_dlc.clone(), rng, seckey)
@@ -228,12 +229,18 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
         })
         .collect();
 
-    let signing_sessions: BTreeMap<Point, SigningSession<PartialSignatureSharingRound>> =
+    let coordinator_session = signing_sessions
+        .remove(&ticketed_dlc.params().market_maker.pubkey)
+        .unwrap()
+        .aggregate_nonces_and_compute_partial_signatures(pubnonces_by_sender)
+        .expect("error aggregating pubnonces");
+
+    let signing_sessions: BTreeMap<Point, SigningSession<ContributorPartialSignatureSharingRound>> =
         signing_sessions
             .into_iter()
             .map(|(pubkey, session)| {
                 let new_session = session
-                    .compute_partial_signatures(pubnonces_by_sender.clone())
+                    .compute_partial_signatures(coordinator_session.aggregated_nonces().clone())
                     .expect("failed to compute partial signatures");
                 (pubkey, new_session)
             })
@@ -250,45 +257,39 @@ fn musig_sign_ticketed_dlc<R: RngCore + CryptoRng>(
         })
         .collect();
 
-    // Everyone's signatures can be verified by everyone else.
-    for session in signing_sessions.values() {
+    // Every player's signatures can be verified individually by the coordinator.
+    if verify_all_partial_signatures {
         for (&sender_pubkey, partial_sigs) in &partial_sigs_by_sender {
-            session
+            coordinator_session
                 .verify_partial_signatures(sender_pubkey, partial_sigs)
                 .expect("valid partial signatures should be verified as OK");
         }
     }
 
-    let mut signed_contracts: BTreeMap<Point, SignedContract> = signing_sessions
-        .into_iter()
-        .map(|(pubkey, session)| {
-            let signed_contract = session
-                .aggregate_all_signatures(partial_sigs_by_sender.clone())
-                .expect("error during signature aggregation");
-            (pubkey, signed_contract)
-        })
-        .collect();
+    let signed_contract = coordinator_session
+        .aggregate_all_signatures(partial_sigs_by_sender)
+        .expect("error aggregating partial signatures");
 
-    // Everyone should have computed the same set of signatures.
-    for contract1 in signed_contracts.values() {
-        for contract2 in signed_contracts.values() {
-            assert_eq!(contract1.all_signatures(), contract2.all_signatures());
-        }
+    for session in signing_sessions.into_values() {
+        session
+            .verify_aggregated_signatures(signed_contract.all_signatures())
+            .expect("player failed to verify signatures aggregated by the market maker");
+
+        // let player_signed_contract =
+        //     session.into_signed_contract(signed_contract.all_signatures().clone());
     }
-
-    let (_, contract) = signed_contracts.pop_first().unwrap();
 
     // SignedContract should be able to be stored and retrieved via serde serialization.
     let decoded_contract = serde_json::from_str(
-        &serde_json::to_string(&contract).expect("error serializing SignedContract"),
+        &serde_json::to_string(&signed_contract).expect("error serializing SignedContract"),
     )
     .expect("error deserializing SignedContract");
     assert_eq!(
-        contract, decoded_contract,
+        signed_contract, decoded_contract,
         "deserialized SignedContract does not match original"
     );
 
-    contract
+    signed_contract
 }
 
 struct SimulationManager {
@@ -414,7 +415,7 @@ impl SimulationManager {
             dave.seckey,
         ];
 
-        let signed_contract = musig_sign_ticketed_dlc(&ticketed_dlc, seckeys, &mut rng);
+        let signed_contract = musig_sign_ticketed_dlc(&ticketed_dlc, seckeys, &mut rng, true);
 
         // At this point, the market maker is confident they'll be able to reclaim their
         // capital if needed, and the players know they'll be able to enforce the DLC outcome
