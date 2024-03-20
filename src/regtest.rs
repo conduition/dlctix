@@ -6,7 +6,7 @@ use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi
 use serial_test::serial;
 
 use bitcoin::{
-    blockdata::transaction::predict_weight,
+    blockdata::transaction::{predict_weight, InputWeightPrediction},
     hashes::Hash,
     key::TweakedPublicKey,
     locktime::absolute::LockTime,
@@ -18,8 +18,6 @@ use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use secp::{MaybeScalar, Point, Scalar};
 
 use std::collections::BTreeMap;
-
-const P2TR_SCRIPT_PUBKEY_SIZE: usize = 34;
 
 /// Generate a P2TR address which pays to the given pubkey (no tweak added).
 fn p2tr_address(pubkey: Point) -> Address {
@@ -33,6 +31,28 @@ fn p2tr_script_pubkey(pubkey: Point) -> ScriptBuf {
     let (xonly, _) = pubkey.into();
     let tweaked = TweakedPublicKey::dangerous_assume_tweaked(xonly);
     ScriptBuf::new_p2tr_tweaked(tweaked)
+}
+
+fn simple_sweep_tx(
+    destination_pubkey: Point,
+    input: TxIn,
+    input_weight: InputWeightPrediction,
+    prevout_value: Amount,
+) -> Transaction {
+    let script_pubkey = p2tr_script_pubkey(destination_pubkey);
+    Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![input],
+        output: vec![TxOut {
+            value: {
+                let tx_weight = predict_weight([input_weight], [script_pubkey.len()]);
+                let fee = tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
+                prevout_value - fee
+            },
+            script_pubkey,
+        }],
+    }
 }
 
 /// Build a bitcoind RPC client for regtest. Expects the following environment variables
@@ -456,10 +476,6 @@ impl SimulationManager {
 
         mine_blocks(&self.rpc, (expiry_height - block_height) as u16)
     }
-
-    fn script_pubkey_market_maker(&self) -> ScriptBuf {
-        p2tr_script_pubkey(self.contract.params().market_maker.pubkey)
-    }
 }
 
 #[test]
@@ -535,22 +551,12 @@ fn ticketed_dlc_with_on_chain_resolutions() {
         .split_sellback_tx_input_and_prevout(&alice_win_cond)
         .unwrap();
 
-    let mut sellback_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![alice_split_input],
-        output: vec![TxOut {
-            script_pubkey: p2tr_script_pubkey(manager.alice.player.pubkey),
-            value: {
-                let sellback_tx_weight = predict_weight(
-                    [manager.contract.split_sellback_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = sellback_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                alice_split_prevout.value - fee
-            },
-        }],
-    };
+    let mut sellback_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        alice_split_input,
+        manager.contract.split_sellback_tx_input_weight(),
+        alice_split_prevout.value,
+    );
 
     manager
         .contract
@@ -581,22 +587,12 @@ fn ticketed_dlc_with_on_chain_resolutions() {
         .split_win_tx_input_and_prevout(&bob_win_cond)
         .unwrap();
 
-    let mut bob_win_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![bob_split_input],
-        output: vec![TxOut {
-            script_pubkey: p2tr_script_pubkey(manager.bob.player.pubkey),
-            value: {
-                let win_tx_weight = predict_weight(
-                    [manager.contract.split_win_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = win_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                bob_split_prevout.value - fee
-            },
-        }],
-    };
+    let mut bob_win_tx = simple_sweep_tx(
+        manager.bob.player.pubkey,
+        bob_split_input,
+        manager.contract.split_win_tx_input_weight(),
+        bob_split_prevout.value,
+    );
 
     // Ensure Bob cannot broadcast a win TX early. OP_CSV should
     // enforce the relative locktime.
@@ -660,22 +656,12 @@ fn ticketed_dlc_with_on_chain_resolutions() {
         .split_reclaim_tx_input_and_prevout(&carol_win_cond)
         .unwrap();
 
-    let mut reclaim_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![carol_split_input],
-        output: vec![TxOut {
-            script_pubkey: manager.script_pubkey_market_maker(),
-            value: {
-                let reclaim_tx_weight = predict_weight(
-                    [manager.contract.split_reclaim_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = reclaim_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                carol_split_prevout.value - fee
-            },
-        }],
-    };
+    let mut reclaim_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        carol_split_input,
+        manager.contract.split_reclaim_tx_input_weight(),
+        carol_split_prevout.value,
+    );
 
     // Ensure the Market Maker cannot broadcast a split reclaim TX early. OP_CSV
     // should enforce the relative locktime.
@@ -772,22 +758,12 @@ fn ticketed_dlc_individual_sellback() {
         .contract
         .split_close_tx_input_and_prevout(&bob_win_cond)
         .expect("error computing split close TX prevouts");
-    let mut close_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![close_tx_input],
-        output: vec![TxOut {
-            script_pubkey: manager.script_pubkey_market_maker(),
-            value: {
-                let close_tx_weight = predict_weight(
-                    [manager.contract.close_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                close_tx_prevout.value - fee
-            },
-        }],
-    };
+    let mut close_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        close_tx_input,
+        manager.contract.close_tx_input_weight(),
+        close_tx_prevout.value,
+    );
 
     manager
         .contract
@@ -837,22 +813,12 @@ fn ticketed_dlc_all_winners_cooperate() {
         .contract
         .outcome_close_tx_input_and_prevout(&outcome)
         .expect("error constructing outcome close TX prevouts");
-    let mut close_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![close_tx_input],
-        output: vec![TxOut {
-            script_pubkey: manager.script_pubkey_market_maker(),
-            value: {
-                let close_tx_weight = predict_weight(
-                    [manager.contract.close_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                close_tx_prevout.value - fee
-            },
-        }],
-    };
+    let mut close_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        close_tx_input,
+        manager.contract.close_tx_input_weight(),
+        close_tx_prevout.value,
+    );
 
     manager
         .contract
@@ -901,23 +867,15 @@ fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
         .contract
         .outcome_reclaim_tx_input_and_prevout(&outcome)
         .expect("error constructing outcome reclaim TX prevouts");
-    let mut reclaim_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![reclaim_tx_input],
-        output: vec![TxOut {
-            script_pubkey: manager.script_pubkey_market_maker(),
-            value: {
-                let input_weight = manager
-                    .contract
-                    .outcome_reclaim_tx_input_weight(&outcome)
-                    .unwrap();
-                let reclaim_tx_weight = predict_weight([input_weight], [P2TR_SCRIPT_PUBKEY_SIZE]);
-                let fee = reclaim_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                reclaim_tx_prevout.value - fee
-            },
-        }],
-    };
+    let mut reclaim_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        reclaim_tx_input,
+        manager
+            .contract
+            .outcome_reclaim_tx_input_weight(&outcome)
+            .unwrap(),
+        reclaim_tx_prevout.value,
+    );
 
     // Ensure the Market Maker cannot broadcast an outcome reclaim TX early. OP_CSV
     // should enforce the relative locktime.
@@ -1050,22 +1008,12 @@ fn ticketed_dlc_contract_expiry_on_chain_resolution() {
         .split_win_tx_input_and_prevout(&dave_win_cond)
         .unwrap();
 
-    let mut dave_win_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![dave_split_input],
-        output: vec![TxOut {
-            script_pubkey: p2tr_script_pubkey(manager.dave.player.pubkey),
-            value: {
-                let win_tx_weight = predict_weight(
-                    [manager.contract.split_win_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = win_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                dave_split_prevout.value - fee
-            },
-        }],
-    };
+    let mut dave_win_tx = simple_sweep_tx(
+        manager.dave.player.pubkey,
+        dave_split_input,
+        manager.contract.split_win_tx_input_weight(),
+        dave_split_prevout.value,
+    );
 
     // Ensure Dave cannot broadcast the win TX early. OP_CSV should
     // enforce the relative locktime.
@@ -1155,22 +1103,12 @@ fn ticketed_dlc_contract_expiry_all_winners_cooperate() {
         .contract
         .outcome_close_tx_input_and_prevout(&outcome)
         .expect("error constructing outcome close TX prevouts");
-    let mut close_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![close_tx_input],
-        output: vec![TxOut {
-            script_pubkey: manager.script_pubkey_market_maker(),
-            value: {
-                let close_tx_weight = predict_weight(
-                    [manager.contract.close_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                close_tx_prevout.value - fee
-            },
-        }],
-    };
+    let mut close_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        close_tx_input,
+        manager.contract.close_tx_input_weight(),
+        close_tx_prevout.value,
+    );
 
     manager
         .contract
@@ -1209,22 +1147,12 @@ fn ticketed_dlc_all_players_cooperate() {
     // double spends the funding TX, but even if the split TX is confirmed,
     // the market maker can then immediately sweep the output of the split TX anyway.
     let (close_tx_input, close_tx_prevout) = manager.contract.funding_close_tx_input_and_prevout();
-    let mut close_tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![close_tx_input],
-        output: vec![TxOut {
-            script_pubkey: manager.script_pubkey_market_maker(),
-            value: {
-                let close_tx_weight = predict_weight(
-                    [manager.contract.close_tx_input_weight()],
-                    [P2TR_SCRIPT_PUBKEY_SIZE],
-                );
-                let fee = close_tx_weight * FeeRate::from_sat_per_vb_unchecked(20);
-                close_tx_prevout.value - fee
-            },
-        }],
-    };
+    let mut close_tx = simple_sweep_tx(
+        manager.contract.params().market_maker.pubkey,
+        close_tx_input,
+        manager.contract.close_tx_input_weight(),
+        close_tx_prevout.value,
+    );
 
     manager
         .contract
