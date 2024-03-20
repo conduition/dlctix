@@ -58,6 +58,10 @@ pub struct ContractParameters {
     /// A mapping of payout weights under different outcomes. Attestation indexes should
     /// align with [`self.event.outcome_messages`][EventAnnouncement::outcome_messages].
     ///
+    // The outcome payouts map describes how payouts are allocated based on the Outcome
+    // which has been attested to by the oracle. If the oracle doesn't attest to any
+    // outcome by the expiry time, then the `Outcome::Expiry` payout will take effect.
+    ///
     /// If this map does not contain a key of [`Outcome::Expiry`], then there is no expiry
     /// condition, and the money simply remains locked in the funding outpoint until the
     /// Oracle's attestation is found.
@@ -68,6 +72,11 @@ pub struct ContractParameters {
 
     /// The amount of on-chain capital which the market maker will provide when funding
     /// the initial multisig deposit contract (after on-chain mining fees).
+    ///
+    /// Normally, this would be the expected sum of the players' off-chain payments to
+    /// the market maker, minus a fee. Winners will split the funding value among
+    /// themselves according to the agreed PayoutWeights for each outcome. Mining fees
+    /// are distributed equally among winners.
     pub funding_value: Amount,
 
     /// A reasonable number of blocks within which a transaction can confirm.
