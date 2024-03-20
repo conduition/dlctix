@@ -314,9 +314,9 @@ dependencies = [
 
 [[package]]
 name = "musig2"
-version = "0.0.8"
+version = "0.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08219fa88b8daa343b8b9b53bb9d1a131f8035fd5080e4d7780bb71487287404"
+checksum = "0852115edbe44f8e258b61383dfded95a8c8d214a8d10e2711f1353789bf0b23"
 dependencies = [
  "base16ct",
  "hmac",
