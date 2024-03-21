@@ -155,7 +155,16 @@ fn mine_blocks(rpc: &BitcoinClient, n_blocks: u16) -> Result<(), bitcoincore_rpc
         .get_new_address(None, Some(bitcoincore_rpc::json::AddressType::Bech32m))?
         .require_network(bitcoin::Network::Regtest)
         .unwrap();
-    rpc.generate_to_address(n_blocks as u64, &address)?;
+
+    // Break into chunks of 30 blocks each to avoid hitting the 15 second default
+    // timeout which bitcoincore_rpc won't let us configure.
+    let mut remaining = n_blocks;
+    while remaining != 0 {
+        let chunk = remaining.min(30);
+        rpc.generate_to_address(chunk as u64, &address)?;
+        remaining -= chunk;
+    }
+
     Ok(())
 }
 
