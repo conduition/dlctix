@@ -489,7 +489,7 @@ impl SimulationManager {
 
 #[test]
 #[serial]
-fn ticketed_dlc_with_on_chain_resolutions() {
+fn with_on_chain_resolutions() {
     let manager = SimulationManager::new();
 
     // The oracle attests to outcome zero, where Alice, Bob, and Carol are winners.
@@ -723,7 +723,7 @@ fn ticketed_dlc_with_on_chain_resolutions() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_individual_sellback() {
+fn individual_sellback() {
     let manager = SimulationManager::new();
 
     // The oracle attests to outcome 1, where Bob and Carol are winners.
@@ -795,7 +795,7 @@ fn ticketed_dlc_individual_sellback() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_all_winners_cooperate() {
+fn all_winners_cooperate() {
     let manager = SimulationManager::new();
 
     // The oracle attests to outcome 1, where Bob and Carol are winners.
@@ -853,7 +853,7 @@ fn ticketed_dlc_all_winners_cooperate() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
+fn market_maker_reclaims_outcome_tx() {
     let manager = SimulationManager::new();
 
     // The oracle attests to outcome 0, where Alice wins.
@@ -953,7 +953,7 @@ fn ticketed_dlc_market_maker_reclaims_outcome_tx() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_contract_expiry_on_chain_resolution() {
+fn contract_expiry_on_chain_resolution() {
     let manager = SimulationManager::new();
 
     // The contract expires, paying out to dave.
@@ -1077,7 +1077,7 @@ fn ticketed_dlc_contract_expiry_on_chain_resolution() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_contract_expiry_all_winners_cooperate() {
+fn contract_expiry_all_winners_cooperate() {
     let manager = SimulationManager::new();
 
     // The contract expires, paying out to dave.
@@ -1140,7 +1140,7 @@ fn ticketed_dlc_contract_expiry_all_winners_cooperate() {
 
 #[test]
 #[serial]
-fn ticketed_dlc_all_players_cooperate() {
+fn all_players_cooperate() {
     let manager = SimulationManager::new();
 
     // The oracle attests to outcome 0, paying out to Alice Bob and Carol.
