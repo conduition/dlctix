@@ -2,9 +2,6 @@
 
 use crate::*;
 
-use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi};
-use serial_test::serial;
-
 use bitcoin::{
     blockdata::transaction::{predict_weight, InputWeightPrediction},
     hashes::Hash,
@@ -17,7 +14,16 @@ use musig2::{CompactSignature, LiftedSignature, PartialSignature, PubNonce};
 use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use secp::{MaybeScalar, Point, Scalar};
 
-use std::collections::BTreeMap;
+use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi};
+use once_cell::sync::Lazy;
+use tempdir::TempDir;
+
+use std::{
+    collections::BTreeMap,
+    process,
+    sync::{Mutex, MutexGuard},
+    thread, time,
+};
 
 /// Generate a P2TR address which pays to the given pubkey (no tweak added).
 fn p2tr_address(pubkey: Point) -> Address {
@@ -55,26 +61,101 @@ fn simple_sweep_tx(
     }
 }
 
-/// Build a bitcoind RPC client for regtest. Expects the following environment variables
-/// to be defined:
+const DEFAULT_REGTEST_RPC_USERNAME: &str = "regtest";
+const DEFAULT_REGTEST_RPC_PASSWORD: &str = "regtest";
+const DEFAULT_REGTEST_RPC_URL: &str = "http://127.0.0.1:18443";
+
+/// This represents a handle to temporary resources which should be
+/// cleaned up when the test ends.
+#[derive(Debug)]
+struct BitcoindSubprocessHandle {
+    #[allow(dead_code)]
+    tempdir: TempDir,
+    #[allow(dead_code)]
+    child: process::Child,
+}
+
+fn run_bitcoind() -> Option<(BitcoindSubprocessHandle, BitcoinClient)> {
+    let dir = TempDir::new("dlctix").expect("error making tempdir");
+
+    let rpc_port: u16 = rand::thread_rng().gen_range(20000..u16::MAX);
+    let p2p_port: u16 = rpc_port + 1;
+
+    let child: process::Child = process::Command::new("bitcoind")
+        .arg("-regtest")
+        .arg("-server")
+        .arg(format!("-rpcport={}", rpc_port))
+        .arg(format!("-port={}", p2p_port))
+        .arg(format!("-rpcuser={}", DEFAULT_REGTEST_RPC_USERNAME))
+        .arg(format!("-rpcpassword={}", DEFAULT_REGTEST_RPC_PASSWORD))
+        .arg(format!("-datadir={}", dir.path().display()))
+        .stdout(process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let subproc_handle = BitcoindSubprocessHandle {
+        tempdir: dir,
+        child,
+    };
+
+    let auth = Auth::UserPass(
+        DEFAULT_REGTEST_RPC_USERNAME.to_string(),
+        DEFAULT_REGTEST_RPC_PASSWORD.to_string(),
+    );
+    let bitcoind_rpc_url = format!("http://127.0.0.1:{}", rpc_port);
+    let rpc_client =
+        BitcoinClient::new(&bitcoind_rpc_url, auth).expect("failed to create bitcoind RPC client");
+
+    Some((subproc_handle, rpc_client))
+}
+
+static REMOTE_NODE_SINGLETON: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Build a bitcoind RPC client for regtest. If `bitcoind` is installed and
+/// available in the `PATH`, then this executes bitcoind and runs it in regtest
+/// mode, pointing to a temporary data directory. In this case we return a handle
+/// pointing to the temporary directory being used, as well as the child process
+/// handle.
 ///
-/// - `BITCOIND_RPC_URL`
+/// Otherwise, the following environment variables should be defined:
+///
+/// - `BITCOIND_RPC_URL` (if missing, falls back to DEFAULT_REGTEST_RPC_URL)
 /// - `BITCOIND_RPC_AUTH_USERNAME`
 /// - `BITCOIND_RPC_AUTH_PASSWORD`
-fn new_rpc_client() -> BitcoinClient {
+fn new_rpc_client() -> (Option<BitcoindSubprocessHandle>, BitcoinClient) {
     dotenv::dotenv().unwrap();
 
-    let bitcoind_rpc_url =
-        std::env::var("BITCOIND_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:18443".to_string());
+    match run_bitcoind() {
+        Some((subproc_handle, rpc_client)) => {
+            // Wait for bitcoind to start.
+            let start = time::Instant::now();
+            while start.elapsed() < time::Duration::from_secs(3) {
+                if rpc_client.get_network_info().is_ok() {
+                    return (Some(subproc_handle), rpc_client);
+                }
+                thread::sleep(std::time::Duration::from_millis(50));
+            }
+            panic!("cannot reach local bitcoind instance");
+        }
 
-    let bitcoind_auth_username =
-        std::env::var("BITCOIND_RPC_AUTH_USERNAME").expect("missing BITCOIND_RPC_AUTH_USERNAME");
+        None => {
+            let bitcoind_auth_username = std::env::var("BITCOIND_RPC_AUTH_USERNAME")
+                .expect("bitcoind not installed; missing BITCOIND_RPC_AUTH_USERNAME");
 
-    let bitcoind_auth_password =
-        std::env::var("BITCOIND_RPC_AUTH_PASSWORD").expect("missing BITCOIND_RPC_AUTH_PASSWORD");
+            let bitcoind_auth_password = std::env::var("BITCOIND_RPC_AUTH_PASSWORD")
+                .expect("bitcoind not installed; missing BITCOIND_RPC_AUTH_PASSWORD");
 
-    let auth = Auth::UserPass(bitcoind_auth_username, bitcoind_auth_password);
-    BitcoinClient::new(&bitcoind_rpc_url, auth).expect("failed to create bitcoind RPC client")
+            let auth = Auth::UserPass(bitcoind_auth_username, bitcoind_auth_password);
+
+            let bitcoind_rpc_url = std::env::var("BITCOIND_RPC_URL")
+                .unwrap_or_else(|_| DEFAULT_REGTEST_RPC_URL.to_string());
+
+            let rpc_client = BitcoinClient::new(&bitcoind_rpc_url, auth)
+                .expect("failed to create bitcoind RPC client");
+
+            (None, rpc_client)
+        }
+    }
 }
 
 const FUNDING_VALUE: Amount = Amount::from_sat(200_000);
@@ -334,6 +415,11 @@ struct SimulationManager {
 
     contract: SignedContract,
     rpc: BitcoinClient,
+    bitcoind_handle: Option<BitcoindSubprocessHandle>,
+
+    // Used for synchronization only
+    #[allow(dead_code)]
+    bitcoind_lock: Option<MutexGuard<'static, ()>>,
 }
 
 impl SimulationManager {
@@ -364,7 +450,28 @@ impl SimulationManager {
             dave.player.clone(),
         ];
 
-        let rpc = new_rpc_client();
+        let (bitcoind_handle, rpc) = new_rpc_client();
+
+        // If we're using a remote bitcoind instance, we don't want tests
+        // to interfere with each other, so grab a lock on a global mutex
+        // which will be released when the SimulationManager is dropped.
+        let bitcoind_lock = if bitcoind_handle.is_none() {
+            // Tests panic sometimes, we should ignore poisoned mutex state.
+            let lock = REMOTE_NODE_SINGLETON
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            Some(lock)
+        } else {
+            None
+        };
+
+        // Fund the market maker. This may mine some blocks.
+        let (mm_utxo_outpoint, mm_utxo_prevout) = take_usable_utxo(
+            &rpc,
+            &market_maker_address,
+            FUNDING_VALUE + Amount::from_sat(50_000),
+        );
+
         let initial_block_height = rpc.get_block_count().unwrap();
 
         let outcome_payouts = BTreeMap::<Outcome, PayoutWeights>::from([
@@ -401,13 +508,6 @@ impl SimulationManager {
             funding_value: FUNDING_VALUE,
             relative_locktime_block_delta: 25,
         };
-
-        // Fund the market maker
-        let (mm_utxo_outpoint, mm_utxo_prevout) = take_usable_utxo(
-            &rpc,
-            &market_maker_address,
-            FUNDING_VALUE + Amount::from_sat(50_000),
-        );
 
         // Prepare a funding transaction
         let funding_tx = signed_funding_tx(
@@ -457,6 +557,8 @@ impl SimulationManager {
 
             contract: signed_contract,
             rpc,
+            bitcoind_handle,
+            bitcoind_lock,
         }
     }
 
@@ -487,8 +589,21 @@ impl SimulationManager {
     }
 }
 
+/// When the test ends, stop bitcoind and remove its temporary datadir.
+impl std::ops::Drop for SimulationManager {
+    fn drop(&mut self) {
+        if let Some(mut handle) = self.bitcoind_handle.take() {
+            self.rpc.stop().expect("failed to stop bitcoind subprocess");
+            handle.child.wait().unwrap();
+            handle
+                .tempdir
+                .close()
+                .expect("failed to clean up temporary directory");
+        }
+    }
+}
+
 #[test]
-#[serial]
 fn with_on_chain_resolutions() {
     let manager = SimulationManager::new();
 
@@ -722,7 +837,6 @@ fn with_on_chain_resolutions() {
 }
 
 #[test]
-#[serial]
 fn individual_sellback() {
     let manager = SimulationManager::new();
 
@@ -794,7 +908,6 @@ fn individual_sellback() {
 }
 
 #[test]
-#[serial]
 fn all_winners_cooperate() {
     let manager = SimulationManager::new();
 
@@ -852,7 +965,6 @@ fn all_winners_cooperate() {
 }
 
 #[test]
-#[serial]
 fn market_maker_reclaims_outcome_tx() {
     let manager = SimulationManager::new();
 
@@ -952,7 +1064,6 @@ fn market_maker_reclaims_outcome_tx() {
 }
 
 #[test]
-#[serial]
 fn contract_expiry_on_chain_resolution() {
     let manager = SimulationManager::new();
 
@@ -1076,7 +1187,6 @@ fn contract_expiry_on_chain_resolution() {
 }
 
 #[test]
-#[serial]
 fn contract_expiry_all_winners_cooperate() {
     let manager = SimulationManager::new();
 
@@ -1139,7 +1249,6 @@ fn contract_expiry_all_winners_cooperate() {
 }
 
 #[test]
-#[serial]
 fn all_players_cooperate() {
     let manager = SimulationManager::new();
 
