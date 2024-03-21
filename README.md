@@ -41,3 +41,93 @@ To demonstrate the practicality of this approach, I have written [a series of in
 ## Walkthrough
 
 To see an example, see [the basic integration test](./tests/basic.rs) which includes very detailed comments and descriptions of everything happening during the DLC construction, signing, and execution phases.
+
+## Running the Tests
+
+To run the integration tests, you'll need a [Bitcoin Regtest Node](https://bisq.network/blog/how-to-set-up-bitcoin-regtest/), either running locally on your machine or accessible by remote HTTP.
+
+### 1. Clone this repo.
+
+```console
+git clone https://github.com/conduition/dlctix.git
+```
+
+### 2. [Install Rust](https://rustup.rs/)
+
+### 3. Install `bitcoind`.
+
+You can download a pre-compiled `bitcoind` binary from [the official bitcoin core releases page](https://bitcoincore.org/en/download/), or build it [from source yourself](https://github.com/bitcoin/bitcoin).
+
+For tests to pass, the `bitcoind` binary should be in your executable `PATH`.
+
+> [!TIP]
+> As an alternative to installing `bitcoind` locally, you can designate a remotely-accessible regtest node and run tests against that. Fill in a `.env` file in the root of the `dlctix` repo folder:
+>
+> ```env
+> BITCOIND_RPC_ADDRESS=http://some-remote.url:18443
+> BITCOIND_RPC_AUTH_USERNAME=<your_nodes_rpc_username>
+> BITCOIND_RPC_AUTH_PASSWORD=<your_nodes_rpc_password>
+> ```
+>
+> Because the remote node's blockchain state is a singleton, tests will run in series, so that their executions do not interfere with each other's blockchain state.
+
+
+### 4. Run the `dlctix` tests.
+
+```
+cargo test
+```
+
+This will compile and execute the unit and integration tests, which validate the numerous contract execution paths and validation conditions which must be enforceable by different parties.
+
+```
+$ cargo test
+   Compiling proc-macro2 v1.0.78
+   Compiling unicode-ident v1.0.12
+   Compiling libc v0.2.153
+   ...
+   Compiling serde_cbor v0.11.2
+   Compiling dotenv v0.15.0
+   Compiling dlctix v0.0.6 (/home/user/src/dlctix)
+    Finished test [unoptimized + debuginfo] target(s) in 56.70s
+     Running unittests src/lib.rs (target/debug/deps/dlctix-1f9c250df9b6ac38)
+
+running 11 tests
+test consts::tests::test_p2tr_dust ... ok
+test regtest::all_players_cooperate ... ok
+test regtest::all_winners_cooperate ... ok
+test regtest::contract_expiry_all_winners_cooperate ... ok
+test regtest::contract_expiry_on_chain_resolution ... ok
+test regtest::individual_sellback ... ok
+test regtest::market_maker_reclaims_outcome_tx ... ok
+test regtest::with_on_chain_resolutions ... ok
+test serialization::tests::contract_parameters_serialization ... ok
+test serialization::tests::player_serialization ... ok
+test regtest::stress_test ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.14s
+
+     Running tests/basic.rs (target/debug/deps/basic-0f34ed113194694a)
+
+running 1 test
+test two_player_example ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+   Doc-tests dlctix
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+```
+
+To run more test threads in parallel, do:
+
+```
+cargo test -- --test-threads 8
+```
+
+If you have `bitcoind` installed locally, each `regtest` case will spawn its own regtest `bitcoind` instance in a subprocess and run against that.
+
+If you _do not_ have `bitcoind` in your `$PATH`, then regtest test-cases will run sequentially regardless of how many threads you ask for.
