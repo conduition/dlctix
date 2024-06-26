@@ -547,9 +547,9 @@ pub struct ContractSignatures {
     pub expiry_tx_signature: Option<CompactSignature>,
     /// A mapping of outcome attestation indexes to adaptor signatures on outcome transactions.
     /// The index of each entry corresponds to the outcomes in
-    /// [`EventLockingConditions::outcome_messages`]. Each adaptor signature can be decrypted
-    /// by the [`EventLockingConditions`]'s oracle producing an attestation signature using
-    /// [`EventLockingConditions::attestation_secret`].
+    /// [`EventLockingConditions::locking_points`]. Each adaptor signature can be decrypted
+    /// if the [`EventLockingConditions`]'s oracle produces an attestation signature using
+    /// the [`attestation_secret`] function.
     pub outcome_tx_signatures: BTreeMap<OutcomeIndex, AdaptorSignature>,
     /// A set of signatures needed for broadcasting split transactions. Each signature
     /// is specific to a certain combination of player and outcome.
