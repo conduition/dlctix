@@ -42,7 +42,7 @@ use std::{
 pub use contract::{
     ContractParameters, Outcome, OutcomeIndex, PayoutWeights, PlayerIndex, SigMap, WinCondition,
 };
-pub use oracles::EventAnnouncement;
+pub use oracles::{attestation_locking_point, attestation_secret, EventLockingConditions};
 pub use parties::{MarketMaker, Player};
 
 /// Represents the combined output of building all transactions and precomputing
@@ -547,9 +547,9 @@ pub struct ContractSignatures {
     pub expiry_tx_signature: Option<CompactSignature>,
     /// A mapping of outcome attestation indexes to adaptor signatures on outcome transactions.
     /// The index of each entry corresponds to the outcomes in
-    /// [`EventAnnouncement::outcome_messages`]. Each adaptor signature can be decrypted
-    /// by the [`EventAnnouncement`]'s oracle producing an attestation signature using
-    /// [`EventAnnouncement::attestation_secret`].
+    /// [`EventLockingConditions::outcome_messages`]. Each adaptor signature can be decrypted
+    /// by the [`EventLockingConditions`]'s oracle producing an attestation signature using
+    /// [`EventLockingConditions::attestation_secret`].
     pub outcome_tx_signatures: BTreeMap<OutcomeIndex, AdaptorSignature>,
     /// A set of signatures needed for broadcasting split transactions. Each signature
     /// is specific to a certain combination of player and outcome.
@@ -653,11 +653,12 @@ impl SignedContract {
             .dlc
             .params
             .event
-            .attestation_lock_point(outcome_index)
+            .locking_points
+            .get(outcome_index)
             .ok_or(Error)?;
 
         // Invalid attestation.
-        if attestation.base_point_mul() != locking_point {
+        if &attestation.base_point_mul() != locking_point {
             return Err(Error)?;
         }
 

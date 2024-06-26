@@ -1,8 +1,8 @@
 use dlctix::bitcoin;
 use dlctix::musig2;
-use dlctix::secp::{Point, Scalar};
+use dlctix::secp::{MaybePoint, Point, Scalar};
 use dlctix::{
-    hashlock, ContractParameters, ContributorPartialSignatureSharingRound, EventAnnouncement,
+    hashlock, ContractParameters, ContributorPartialSignatureSharingRound, EventLockingConditions,
     MarketMaker, NonceSharingRound, Outcome, PayoutWeights, Player, SigMap, SignedContract,
     SigningSession, TicketedDLC, WinCondition,
 };
@@ -59,22 +59,29 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
     // Oracles usually publish their announcements and attestations over
     // public mediums like a website, or Twitter, or Nostr.
     let oracle_seckey = Scalar::random(&mut rng);
+    let oracle_pubkey = oracle_seckey.base_point_mul();
 
     // Each event has an associated nonce which the oracle commits to
     // ahead of time.
     let oracle_secnonce = Scalar::random(&mut rng);
+    let nonce_point = oracle_secnonce.base_point_mul();
 
-    // An announcement describes the different messages an oracle might sign.
-    let event = EventAnnouncement {
-        oracle_pubkey: oracle_seckey.base_point_mul(),
-        nonce_point: oracle_secnonce.base_point_mul(),
+    // We enumerate the different outcome messages the oracle could sign...
+    let outcome_messages = vec![
+        Vec::from(b"alice wins"),
+        Vec::from(b"bob wins"),
+        Vec::from(b"tie"),
+    ];
 
-        // We enumerate the different outcome messages the oracle could sign.
-        outcome_messages: vec![
-            Vec::from(b"alice wins"),
-            Vec::from(b"bob wins"),
-            Vec::from(b"tie"),
-        ],
+    // ...and then precompute the locking points needed for each possible outcome.
+    let locking_points: Vec<MaybePoint> = outcome_messages
+        .iter()
+        .map(|msg| dlctix::attestation_locking_point(oracle_pubkey, nonce_point, msg))
+        .collect();
+
+    // This struct describes the different possible outcomes an oracle might sign.
+    let event = EventLockingConditions {
+        locking_points,
 
         // The expiry time is the time after which the Expiry outcome transaction should be
         // triggered. This can either be a unix seconds timestamp, or a bitcoin block height,
@@ -96,7 +103,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
     let tie_payout = PayoutWeights::from([(0, 1), (1, 1)]); // split the pot evenly
 
     // An Outcome is a compact representation of which of the messages in the
-    // `EventAnnouncement::outcome_messages` field (if any) an oracle might attest
+    // `EventLockingConditions::outcome_messages` field (if any) an oracle might attest
     // to.
     let alice_wins_outcome = Outcome::Attestation(0);
     let bob_wins_outcome = Outcome::Attestation(1);
@@ -239,11 +246,11 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
     //
     // However, before _any_ outcome can be enforced, the oracle must publish their attestation.
     let outcome_index = 0;
-    let oracle_attestation = signed_contract
-        .params()
-        .event
-        .attestation_secret(outcome_index, oracle_seckey, oracle_secnonce)
-        .unwrap();
+    let oracle_attestation = dlctix::attestation_secret(
+        oracle_seckey,
+        oracle_secnonce,
+        &outcome_messages[outcome_index],
+    );
 
     // A win condition describes an outcome and a particular player
     // who is paid out under that outcome.

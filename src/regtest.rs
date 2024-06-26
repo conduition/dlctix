@@ -12,7 +12,7 @@ use bitcoin::{
 };
 use musig2::{CompactSignature, LiftedSignature, PartialSignature, PubNonce};
 use rand::{CryptoRng, Rng, RngCore, SeedableRng};
-use secp::{MaybeScalar, Point, Scalar};
+use secp::{MaybePoint, MaybeScalar, Point, Scalar};
 
 use bitcoincore_rpc::{jsonrpc::serde_json, Auth, Client as BitcoinClient, RpcApi};
 use once_cell::sync::Lazy;
@@ -412,6 +412,7 @@ struct SimulationManager {
     market_maker_seckey: Scalar,
     oracle_seckey: Scalar,
     oracle_secnonce: Scalar,
+    outcome_messages: Vec<Vec<u8>>,
 
     contract: SignedContract,
     rpc: BitcoinClient,
@@ -429,6 +430,17 @@ impl SimulationManager {
         // Oracle
         let oracle_seckey = Scalar::random(&mut rng);
         let oracle_secnonce = Scalar::random(&mut rng);
+        let oracle_pubkey = oracle_seckey.base_point_mul();
+        let nonce_point = oracle_secnonce.base_point_mul();
+        let outcome_messages = vec![
+            Vec::from(b"alice, bob, and carol win"),
+            Vec::from(b"bob and carol win"),
+            Vec::from(b"alice wins"),
+        ];
+        let locking_points: Vec<MaybePoint> = outcome_messages
+            .iter()
+            .map(|msg| attestation_locking_point(oracle_pubkey, nonce_point, msg))
+            .collect();
 
         // Market maker
         let market_maker_seckey = Scalar::random(&mut rng);
@@ -493,14 +505,8 @@ impl SimulationManager {
         let contract_params = ContractParameters {
             market_maker,
             players,
-            event: EventAnnouncement {
-                oracle_pubkey: oracle_seckey.base_point_mul(),
-                nonce_point: oracle_secnonce.base_point_mul(),
-                outcome_messages: vec![
-                    Vec::from(b"alice, bob, and carol win"),
-                    Vec::from(b"bob and carol win"),
-                    Vec::from(b"alice wins"),
-                ],
+            event: EventLockingConditions {
+                locking_points,
                 expiry: u32::try_from(initial_block_height + 100).ok(),
             },
             outcome_payouts,
@@ -554,6 +560,7 @@ impl SimulationManager {
             market_maker_seckey,
             oracle_seckey,
             oracle_secnonce,
+            outcome_messages,
 
             contract: signed_contract,
             rpc,
@@ -562,13 +569,16 @@ impl SimulationManager {
         }
     }
 
-    fn event(&self) -> &EventAnnouncement {
+    fn event(&self) -> &EventLockingConditions {
         &self.contract.params().event
     }
 
     fn oracle_attestation(&self, outcome_index: OutcomeIndex) -> Option<MaybeScalar> {
-        self.event()
-            .attestation_secret(outcome_index, self.oracle_seckey, self.oracle_secnonce)
+        Some(attestation_secret(
+            self.oracle_seckey,
+            self.oracle_secnonce,
+            self.outcome_messages.get(outcome_index)?,
+        ))
     }
 
     fn mine_delta_blocks(&self) -> Result<(), bitcoincore_rpc::Error> {
@@ -614,11 +624,11 @@ fn with_on_chain_resolutions() {
     // The attestation should be a valid BIP340 signature by the oracle's pubkey.
     {
         let oracle_signature =
-            LiftedSignature::new(manager.event().nonce_point, oracle_attestation);
+            LiftedSignature::new(manager.oracle_secnonce.base_point_mul(), oracle_attestation);
         musig2::verify_single(
-            manager.event().oracle_pubkey,
+            manager.oracle_seckey.base_point_mul(),
             oracle_signature,
-            &manager.event().outcome_messages[outcome_index],
+            crate::oracles::outcome_message_hash(&manager.outcome_messages[outcome_index]),
         )
         .expect("invalid oracle signature");
     }
@@ -1313,6 +1323,8 @@ fn stress_test() {
     // Oracle
     let oracle_seckey = Scalar::random(&mut rng);
     let oracle_secnonce = Scalar::random(&mut rng);
+    let oracle_pubkey = oracle_seckey.base_point_mul();
+    let nonce_point = oracle_secnonce.base_point_mul();
 
     // Market maker
     let market_maker_seckey = Scalar::random(&mut rng);
@@ -1324,6 +1336,11 @@ fn stress_test() {
 
     let outcome_messages: Vec<Vec<u8>> = (0..n_outcomes)
         .map(|i| Vec::from((i as u32).to_be_bytes()))
+        .collect();
+
+    let locking_points: Vec<MaybePoint> = outcome_messages
+        .iter()
+        .map(|msg| attestation_locking_point(oracle_pubkey, nonce_point, msg))
         .collect();
 
     // Generate random payouts with 4 winners per outcome
@@ -1344,10 +1361,8 @@ fn stress_test() {
     let contract_params = ContractParameters {
         market_maker,
         players,
-        event: EventAnnouncement {
-            oracle_pubkey: oracle_seckey.base_point_mul(),
-            nonce_point: oracle_secnonce.base_point_mul(),
-            outcome_messages,
+        event: EventLockingConditions {
+            locking_points,
             expiry: None,
         },
         outcome_payouts,

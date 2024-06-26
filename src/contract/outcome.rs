@@ -136,7 +136,8 @@ pub(crate) fn partial_sign_outcome_txs(
                 // All outcome TX signatures should be locked by the oracle's outcome point.
                 let attestation_lock_point = params
                     .event
-                    .attestation_lock_point(outcome_index)
+                    .locking_points
+                    .get(outcome_index)
                     .ok_or(Error)?;
 
                 // sign under an attestation lock point
@@ -145,7 +146,7 @@ pub(crate) fn partial_sign_outcome_txs(
                     seckey,
                     secnonce,
                     aggnonce,
-                    attestation_lock_point,
+                    *attestation_lock_point,
                     sighash,
                 )?
             }
@@ -189,14 +190,15 @@ pub(crate) fn verify_outcome_tx_partial_signatures(
                 // All outcome TX signatures should be locked by the oracle's outcome point.
                 let attestation_lock_point = params
                     .event
-                    .attestation_lock_point(outcome_index)
+                    .locking_points
+                    .get(outcome_index)
                     .ok_or(Error)?;
 
                 musig2::adaptor::verify_partial(
                     funding_spend_info.key_agg_ctx(),
                     partial_sig,
                     aggnonce,
-                    attestation_lock_point,
+                    *attestation_lock_point,
                     signer_pubkey,
                     pubnonce,
                     sighash,
@@ -273,13 +275,14 @@ where
             Outcome::Attestation(outcome_index) => {
                 let attestation_lock_point = params
                     .event
-                    .attestation_lock_point(outcome_index)
+                    .locking_points
+                    .get(outcome_index)
                     .ok_or(Error)?;
 
                 let adaptor_sig = musig2::adaptor::aggregate_partial_signatures(
                     funding_spend_info.key_agg_ctx(),
                     aggnonce,
-                    attestation_lock_point,
+                    *attestation_lock_point,
                     partial_sigs,
                     sighash,
                 )?;
@@ -342,7 +345,8 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
                 Outcome::Attestation(outcome_index) => {
                     let adaptor_point = params
                         .event
-                        .attestation_lock_point(outcome_index)
+                        .locking_points
+                        .get(outcome_index)
                         .ok_or(Error)?;
 
                     let &signature = outcome_tx_signatures.get(&outcome_index).ok_or(Error)?;
@@ -350,7 +354,7 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
                         joint_pubkey,
                         sighash,
                         signature,
-                        adaptor_point,
+                        *adaptor_point,
                     )
                 }
 

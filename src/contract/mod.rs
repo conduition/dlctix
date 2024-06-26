@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     consts::{P2TR_DUST_VALUE, P2TR_SCRIPT_PUBKEY_SIZE},
     errors::Error,
-    oracles::EventAnnouncement,
+    oracles::EventLockingConditions,
     parties::{MarketMaker, Player},
     spend_info::FundingSpendInfo,
 };
@@ -53,10 +53,10 @@ pub struct ContractParameters {
     pub players: Vec<Player>,
 
     /// The event whose outcome determines the payouts.
-    pub event: EventAnnouncement,
+    pub event: EventLockingConditions,
 
     /// A mapping of payout weights under different outcomes. Attestation indexes should
-    /// align with [`self.event.outcome_messages`][EventAnnouncement::outcome_messages].
+    /// align with [`self.event.locking_points`][EventLockingConditions::locking_points].
     ///
     // The outcome payouts map describes how payouts are allocated based on the Outcome
     // which has been attested to by the oracle. If the oracle doesn't attest to any

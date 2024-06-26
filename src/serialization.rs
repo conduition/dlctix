@@ -157,38 +157,10 @@ pub(crate) mod byte_array {
     }
 }
 
-pub(crate) mod vec_of_byte_vecs {
-    use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
-    use serdect::slice::HexOrBin;
-
-    pub(crate) fn serialize<S: Serializer>(vecs: &Vec<Vec<u8>>, ser: S) -> Result<S::Ok, S::Error> {
-        if !ser.is_human_readable() {
-            return vecs.serialize(ser);
-        }
-        let mut seq = ser.serialize_seq(Some(vecs.len()))?;
-        for vec in vecs {
-            let slice: &[u8] = vec.as_ref();
-            seq.serialize_element(&hex::encode(slice))?;
-        }
-        seq.end()
-    }
-
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<Vec<u8>>, D::Error> {
-        Ok(
-            Vec::<serdect::slice::HexOrBin<false>>::deserialize(deserializer)?
-                .into_iter()
-                .map(|HexOrBin(vec)| vec)
-                .collect(),
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventAnnouncement, MarketMaker, PayoutWeights, Player};
+    use crate::{EventLockingConditions, MarketMaker, PayoutWeights, Player};
 
     use bitcoin::{Amount, FeeRate};
     use hex::ToHex;
@@ -241,17 +213,14 @@ mod tests {
                     payout_hash: [40; 32],
                 },
             ],
-            event: EventAnnouncement {
-                oracle_pubkey: "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7"
-                    .parse()
-                    .unwrap(),
-                nonce_point: "0317aec4eea8a2b02c38e6b67c26015d16c82a3a44abc28d1def124c1f79786fc5"
-                    .parse()
-                    .unwrap(),
-                outcome_messages: vec![
-                    Vec::from(b"option 1"),
-                    Vec::from(b"option 2"),
-                    Vec::from(b"option 3"),
+            event: EventLockingConditions {
+                locking_points: vec![
+                    "036b382e40647af612900fe6ad0aa0003790fef503ffa910c06d04811863d0791f"
+                        .parse()
+                        .unwrap(),
+                    "038f7cd041cdf74616b9ce4837dbbc8a316e7f0150ab96419bd9a24db9b36e261d"
+                        .parse()
+                        .unwrap(),
                 ],
                 expiry: Some(u32::MAX),
             },
@@ -289,12 +258,9 @@ mod tests {
     }
   ],
   "event": {
-    "oracle_pubkey": "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
-    "nonce_point": "0317aec4eea8a2b02c38e6b67c26015d16c82a3a44abc28d1def124c1f79786fc5",
-    "outcome_messages": [
-      "6f7074696f6e2031",
-      "6f7074696f6e2032",
-      "6f7074696f6e2033"
+    "locking_points": [
+      "036b382e40647af612900fe6ad0aa0003790fef503ffa910c06d04811863d0791f",
+      "038f7cd041cdf74616b9ce4837dbbc8a316e7f0150ab96419bd9a24db9b36e261d"
     ],
     "expiry": 4294967295
   },
