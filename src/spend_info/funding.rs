@@ -65,7 +65,7 @@ impl FundingSpendInfo {
     pub(crate) fn sighash_tx_outcome(
         &self,
         outcome_tx: &Transaction,
-    ) -> Result<TapSighash, bitcoin::sighash::Error> {
+    ) -> Result<TapSighash, bitcoin::sighash::TaprootError> {
         let funding_prevouts = [self.funding_output()];
 
         SighashCache::new(outcome_tx).taproot_key_spend_signature_hash(

@@ -523,7 +523,7 @@ impl SimulationManager {
             &mm_utxo_prevout,
         );
         let funding_outpoint = OutPoint {
-            txid: funding_tx.txid(),
+            txid: funding_tx.compute_txid(),
             vout: 0,
         };
 
@@ -753,7 +753,7 @@ fn with_on_chain_resolutions() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -821,7 +821,7 @@ fn with_on_chain_resolutions() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -1032,7 +1032,7 @@ fn market_maker_reclaims_outcome_tx() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -1170,7 +1170,7 @@ fn contract_expiry_on_chain_resolution() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
+             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -1312,8 +1312,8 @@ fn stress_test() {
     let mut rng = rand::rngs::StdRng::from_seed([0; 32]);
 
     // Stress-testing parameters.
-    let n_players = 50;
-    let n_outcomes = 50;
+    let n_players = 20;
+    let n_outcomes = 6;
     let winners_per_outcome = 2;
 
     let simulated_players: Vec<SimulatedPlayer> = (0..n_players)

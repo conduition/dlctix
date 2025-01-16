@@ -387,7 +387,7 @@ pub(crate) fn outcome_tx_prevout<'x>(
 
     let outcome_input = TxIn {
         previous_output: OutPoint {
-            txid: outcome_tx.txid(),
+            txid: outcome_tx.compute_txid(),
             vout: 0,
         },
         sequence: Sequence::from_height(block_delay),

@@ -202,7 +202,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
     // first needs players' signatures to ensure he can recover his money
     // if they disappear.
     let funding_outpoint = bitcoin::OutPoint {
-        txid: funding_tx.txid(),
+        txid: funding_tx.compute_txid(),
         vout: 0,
     };
 
@@ -235,7 +235,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
     // Once the market maker is ready, they can broadcast the funding TX to lock in the Ticketed DLC.
     sign_transaction(&mut funding_tx);
     broadcast_transaction(&funding_tx);
-    wait_for_confs(&funding_tx.txid(), 1);
+    wait_for_confs(&funding_tx.compute_txid(), 1);
 
     // Once the funding TX is confirmed, players can begin buying their ticket preimages
     // from the market maker. This would probably take place via the lightning network,
@@ -272,7 +272,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
 
         // Alice must wait for the relative locktime to expire before she can use the split transaction.
         wait_for_confs(
-            &outcome_tx.txid(),
+            &outcome_tx.compute_txid(),
             signed_contract.params().relative_locktime_block_delta,
         );
 
@@ -283,7 +283,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
         // Alice must wait for the relative locktime to expire before she can extract her money
         // from the split transaction output.
         wait_for_confs(
-            &split_tx.txid(),
+            &split_tx.compute_txid(),
             signed_contract.params().relative_locktime_block_delta,
         );
 
@@ -312,7 +312,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         broadcast_transaction(&alice_win_tx);
-        wait_for_confs(&alice_win_tx.txid(), 1);
+        wait_for_confs(&alice_win_tx.compute_txid(), 1);
 
         // Alice now has 100% control over her winnings.
         Ok(())
@@ -405,7 +405,7 @@ fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
         // The reclaim TX spending path is only unlocked after double the locktime
         // needed for the split TX.
         wait_for_confs(
-            &outcome_tx.txid(),
+            &outcome_tx.compute_txid(),
             2 * signed_contract.params().relative_locktime_block_delta,
         );
 

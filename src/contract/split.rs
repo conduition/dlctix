@@ -345,7 +345,7 @@ pub(crate) fn split_tx_prevout<'x>(
 
     let input = TxIn {
         previous_output: OutPoint {
-            txid: split_tx.txid(),
+            txid: split_tx.compute_txid(),
             vout: split_tx_output_index as u32,
         },
         sequence: Sequence::from_height(block_delay),

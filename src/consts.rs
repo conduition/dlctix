@@ -14,6 +14,6 @@ mod tests {
         let xonly = bitcoin::XOnlyPublicKey::from_slice(&[1; 32]).unwrap();
         let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly);
         let script = bitcoin::ScriptBuf::new_p2tr_tweaked(tweaked);
-        assert_eq!(script.dust_value(), P2TR_DUST_VALUE);
+        assert_eq!(script.minimal_non_dust(), P2TR_DUST_VALUE);
     }
 }

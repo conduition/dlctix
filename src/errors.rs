@@ -58,8 +58,8 @@ impl From<bitcoin::taproot::IncompleteBuilderError> for Error {
     }
 }
 
-impl From<bitcoin::sighash::Error> for Error {
-    fn from(_: bitcoin::sighash::Error) -> Self {
+impl From<bitcoin::sighash::TaprootError> for Error {
+    fn from(_: bitcoin::sighash::TaprootError) -> Self {
         Error
     }
 }
