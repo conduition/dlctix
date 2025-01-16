@@ -78,7 +78,9 @@ pub(crate) fn build_outcome_txs(
             };
 
             let lock_time = match outcome {
-                Outcome::Expiry => LockTime::from_consensus(params.event.expiry.ok_or(Error)?),
+                Outcome::Expiry => {
+                    LockTime::from_consensus(params.event.expiry.ok_or(Error::InvalidLocktime)?)
+                }
                 Outcome::Attestation(_) => LockTime::ZERO, // Normal outcome transaction
             };
 
@@ -120,13 +122,17 @@ pub(crate) fn partial_sign_outcome_txs(
     funding_spend_info
         .key_agg_ctx()
         .pubkey_index(seckey.base_point_mul())
-        .ok_or(Error)?;
+        .ok_or(Error::InvalidKey)?;
 
     let mut outcome_partial_sigs = BTreeMap::<Outcome, PartialSignature>::new();
 
     for (&outcome, outcome_tx) in outcome_txs {
-        let aggnonce = aggnonces.get(&outcome).ok_or(Error)?; // must provide all aggnonces
-        let secnonce = secnonces.remove(&outcome).ok_or(Error)?; // must provide all secnonces
+        let aggnonce = aggnonces
+            .get(&outcome)
+            .ok_or(Error::MissingNonce(String::from("aggnonce for outcome")))?; // must provide all aggnonces
+        let secnonce = secnonces
+            .remove(&outcome)
+            .ok_or(Error::MissingNonce(String::from("secnonce for outcome")))?; // must provide all secnonces
 
         // Hash the outcome TX.
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
@@ -138,7 +144,7 @@ pub(crate) fn partial_sign_outcome_txs(
                     .event
                     .locking_points
                     .get(outcome_index)
-                    .ok_or(Error)?;
+                    .ok_or(Error::UnknownOutcome)?;
 
                 // sign under an attestation lock point
                 musig2::adaptor::sign_partial(
@@ -178,9 +184,17 @@ pub(crate) fn verify_outcome_tx_partial_signatures(
     let funding_spend_info = &outcome_build_out.funding_spend_info;
 
     for (&outcome, outcome_tx) in outcome_txs {
-        let aggnonce = aggnonces.get(&outcome).ok_or(Error)?; // must provide all aggnonces
-        let pubnonce = pubnonces.get(&outcome).ok_or(Error)?; // must provide all pubnonces
-        let &partial_sig = partial_signatures.get(&outcome).ok_or(Error)?; // must provide all sigs
+        let aggnonce = aggnonces
+            .get(&outcome)
+            .ok_or(Error::MissingNonce(String::from("aggnonce for outcome")))?; // must provide all aggnonces
+        let pubnonce = pubnonces
+            .get(&outcome)
+            .ok_or(Error::MissingNonce(String::from("pubnonce for outcome")))?; // must provide all pubnonces
+        let &partial_sig = partial_signatures
+            .get(&outcome)
+            .ok_or(Error::MissingSignature(String::from(
+                "partial_signatures for outcome",
+            )))?; // must provide all sigs
 
         // Hash the outcome TX.
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
@@ -192,7 +206,7 @@ pub(crate) fn verify_outcome_tx_partial_signatures(
                     .event
                     .locking_points
                     .get(outcome_index)
-                    .ok_or(Error)?;
+                    .ok_or(Error::UnknownOutcome)?;
 
                 musig2::adaptor::verify_partial(
                     funding_spend_info.key_agg_ctx(),
@@ -263,10 +277,17 @@ where
 
     for (&outcome, outcome_tx) in outcome_txs {
         // must provide a set of sigs for each TX
-        let partial_sigs = partial_signature_groups.remove(&outcome).ok_or(Error)?;
+        let partial_sigs =
+            partial_signature_groups
+                .remove(&outcome)
+                .ok_or(Error::MissingSignature(String::from(
+                    "outcome from partial signature groups",
+                )))?;
 
         // must provide all aggnonces
-        let aggnonce = aggnonces.get(&outcome).ok_or(Error)?;
+        let aggnonce = aggnonces
+            .get(&outcome)
+            .ok_or(Error::MissingNonce(String::from("aggnonces for outcome")))?;
 
         // Hash the outcome TX.
         let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
@@ -277,7 +298,7 @@ where
                     .event
                     .locking_points
                     .get(outcome_index)
-                    .ok_or(Error)?;
+                    .ok_or(Error::UnknownOutcome)?;
 
                 let adaptor_sig = musig2::adaptor::aggregate_partial_signatures(
                     funding_spend_info.key_agg_ctx(),
@@ -325,7 +346,7 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
     // win something.
     let relevant_outcomes: BTreeSet<Outcome> = params
         .win_conditions_claimable_by_pubkey(our_pubkey)
-        .ok_or(Error)?
+        .ok_or(Error::InvalidKey)?
         .into_iter()
         .map(|win_cond| win_cond.outcome)
         .collect();
@@ -334,7 +355,10 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
     let batch: Vec<BatchVerificationRow> = relevant_outcomes
         .into_iter()
         .map(|outcome| {
-            let outcome_tx = outcome_build_out.outcome_txs.get(&outcome).ok_or(Error)?;
+            let outcome_tx = outcome_build_out
+                .outcome_txs
+                .get(&outcome)
+                .ok_or(Error::UnknownOutcome)?;
 
             let sighash = outcome_build_out
                 .funding_spend_info
@@ -347,9 +371,13 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
                         .event
                         .locking_points
                         .get(outcome_index)
-                        .ok_or(Error)?;
+                        .ok_or(Error::UnknownOutcome)?;
 
-                    let &signature = outcome_tx_signatures.get(&outcome_index).ok_or(Error)?;
+                    let &signature = outcome_tx_signatures.get(&outcome_index).ok_or(
+                        Error::MissingSignature(String::from(
+                            "outcome index outcome tx signatures",
+                        )),
+                    )?;
                     BatchVerificationRow::from_adaptor_signature(
                         joint_pubkey,
                         sighash,
@@ -360,7 +388,9 @@ pub(crate) fn verify_outcome_tx_aggregated_signatures(
 
                 // One signature for the optional expiry transaction.
                 Outcome::Expiry => {
-                    let signature = expiry_tx_signature.ok_or(Error)?.lift_nonce()?;
+                    let signature = expiry_tx_signature
+                        .ok_or(Error::MissingSignature(String::from("expiry tx signature")))?
+                        .lift_nonce()?;
                     BatchVerificationRow::from_signature(joint_pubkey, sighash, signature)
                 }
             };
@@ -383,7 +413,10 @@ pub(crate) fn outcome_tx_prevout<'x>(
     outcome: &Outcome,
     block_delay: u16,
 ) -> Result<(TxIn, &'x TxOut), Error> {
-    let outcome_tx = outcome_build_out.outcome_txs().get(outcome).ok_or(Error)?;
+    let outcome_tx = outcome_build_out
+        .outcome_txs()
+        .get(outcome)
+        .ok_or(Error::UnknownOutcome)?;
 
     let outcome_input = TxIn {
         previous_output: OutPoint {
@@ -394,7 +427,10 @@ pub(crate) fn outcome_tx_prevout<'x>(
         ..TxIn::default()
     };
 
-    let prevout = outcome_tx.output.get(0).ok_or(Error)?;
+    let prevout = outcome_tx
+        .output
+        .get(0)
+        .ok_or(Error::InvalidInput("missing outcome tx output"))?;
 
     Ok((outcome_input, prevout))
 }

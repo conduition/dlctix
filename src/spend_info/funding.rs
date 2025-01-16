@@ -103,7 +103,10 @@ impl FundingSpendInfo {
                 if pubkey == mm_pubkey {
                     Ok(market_maker_secret_key)
                 } else {
-                    player_secret_keys.get(&pubkey).ok_or(Error).copied()
+                    player_secret_keys
+                        .get(&pubkey)
+                        .ok_or(Error::OutOfBoundsPlayerIndex)
+                        .copied()
                 }
             })
             .collect::<Result<_, Error>>()?;

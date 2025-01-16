@@ -20,8 +20,12 @@ impl std::str::FromStr for Outcome {
         match s {
             "exp" => Ok(Outcome::Expiry),
             s => {
-                let index_str = s.strip_prefix("att").ok_or(Error)?;
-                let outcome_index = index_str.parse().map_err(|_| Error)?;
+                let index_str = s.strip_prefix("att").ok_or(Error::Conversion(
+                    "invalid outcome format, expected 'att' prefix",
+                ))?;
+                let outcome_index = index_str
+                    .parse::<usize>()
+                    .map_err(Error::ParseOutcomeIndex)?;
                 Ok(Outcome::Attestation(outcome_index))
             }
         }
@@ -72,10 +76,14 @@ impl std::str::FromStr for WinCondition {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (prefix, suffix) = s.split_once(":").ok_or(Error)?;
+        let (prefix, suffix) = s.split_once(":").ok_or(Error::Conversion(
+            "invalid win condition format, missing ':' separator",
+        ))?;
         let outcome: Outcome = prefix.parse()?;
-        let player_index_str = suffix.strip_prefix("p").ok_or(Error)?;
-        let player_index = player_index_str.parse().map_err(|_| Error)?;
+        let player_index_str = suffix.strip_prefix("p").ok_or(Error::Conversion(
+            "invalid win condition format, expected 'p' prefix",
+        ))?;
+        let player_index = player_index_str.parse()?;
         Ok(WinCondition {
             outcome,
             player_index,

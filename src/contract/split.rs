@@ -49,7 +49,7 @@ pub(crate) fn build_split_txs(
         let outcome_spend_info = &outcome_build_output
             .outcome_spend_infos()
             .get(&outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         // Fee estimation
         let input_weight = outcome_spend_info.input_weight_for_split_tx();
@@ -72,7 +72,10 @@ pub(crate) fn build_split_txs(
         // payout_values is a btree, so outputs are automatically sorted by player.
         let mut split_tx_outputs = Vec::with_capacity(payout_map.len());
         for (player_index, payout_value) in payout_values {
-            let player = params.players.get(player_index).ok_or(Error)?;
+            let player = params
+                .players
+                .get(player_index)
+                .ok_or(Error::OutOfBoundsPlayerIndex)?;
             let split_spend_info = SplitSpendInfo::new(
                 player,
                 &params.market_maker,
@@ -131,7 +134,7 @@ pub(crate) fn partial_sign_split_txs(
 
     let win_conditions_to_sign = params
         .win_conditions_controlled_by_pubkey(pubkey)
-        .ok_or(Error)?;
+        .ok_or(Error::InvalidKey)?;
     if win_conditions_to_sign.is_empty() {
         return Ok(partial_signatures);
     }
@@ -140,15 +143,23 @@ pub(crate) fn partial_sign_split_txs(
         let split_tx = split_build_out
             .split_txs()
             .get(&win_cond.outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
-        let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?; // must provide all aggnonces
-        let secnonce = secnonces.remove(&win_cond).ok_or(Error)?; // must provide all secnonces
+        let aggnonce = aggnonces
+            .get(&win_cond)
+            .ok_or(Error::MissingNonce(String::from(
+                "aggnonce for win condition",
+            )))?; // must provide all aggnonces
+        let secnonce = secnonces
+            .remove(&win_cond)
+            .ok_or(Error::MissingNonce(String::from(
+                "secnonces for win condition",
+            )))?; // must provide all secnonces
 
         let outcome_spend_info = outcome_build_out
             .outcome_spend_infos()
             .get(&win_cond.outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         // Hash the split TX.
         let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
@@ -187,22 +198,36 @@ pub(crate) fn verify_split_tx_partial_signatures(
 ) -> Result<(), Error> {
     let win_conditions_to_sign = params
         .win_conditions_controlled_by_pubkey(signer_pubkey)
-        .ok_or(Error)?;
+        .ok_or(Error::InvalidKey)?;
 
     for win_cond in win_conditions_to_sign {
         let split_tx = split_build_out
             .split_txs()
             .get(&win_cond.outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
-        let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?; // must provide all aggnonces
-        let pubnonce = pubnonces.get(&win_cond).ok_or(Error)?; // must provide all pubnonces
-        let partial_sig = partial_signatures.get(&win_cond).copied().ok_or(Error)?; // must provide all sigs
+        let aggnonce = aggnonces
+            .get(&win_cond)
+            .ok_or(Error::MissingNonce(String::from(
+                "aggnonces for win condition",
+            )))?; // must provide all aggnonces
+        let pubnonce = pubnonces
+            .get(&win_cond)
+            .ok_or(Error::MissingNonce(String::from(
+                "pubnonce for win condition",
+            )))?; // must provide all pubnonces
+        let partial_sig =
+            partial_signatures
+                .get(&win_cond)
+                .copied()
+                .ok_or(Error::MissingSignature(String::from(
+                    "partial signatures for win condition",
+                )))?;
 
         let outcome_spend_info = outcome_build_out
             .outcome_spend_infos()
             .get(&win_cond.outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         // Hash the split TX.
         let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
@@ -243,18 +268,25 @@ where
             let split_tx = split_build_out
                 .split_txs()
                 .get(&win_cond.outcome)
-                .ok_or(Error)?;
+                .ok_or(Error::UnknownOutcome)?;
 
-            let relevant_partial_sigs = partial_signatures_by_win_cond
-                .remove(&win_cond)
-                .ok_or(Error)?;
+            let relevant_partial_sigs =
+                partial_signatures_by_win_cond
+                    .remove(&win_cond)
+                    .ok_or(Error::MissingSignature(String::from(
+                        "partial signatures by win cond for win condition",
+                    )))?;
 
-            let aggnonce = aggnonces.get(&win_cond).ok_or(Error)?;
+            let aggnonce = aggnonces
+                .get(&win_cond)
+                .ok_or(Error::MissingNonce(String::from(
+                    "aggnonces for win condition",
+                )))?;
 
             let outcome_spend_info = outcome_build_out
                 .outcome_spend_infos()
                 .get(&win_cond.outcome)
-                .ok_or(Error)?;
+                .ok_or(Error::UnknownOutcome)?;
 
             // Hash the split TX.
             let sighash = outcome_spend_info.sighash_tx_split(split_tx, &win_cond.player_index)?;
@@ -283,7 +315,7 @@ pub(crate) fn verify_split_tx_aggregated_signatures(
     // win something.
     let relevant_win_conditions: BTreeSet<WinCondition> = params
         .win_conditions_claimable_by_pubkey(our_pubkey)
-        .ok_or(Error)?;
+        .ok_or(Error::InvalidKey)?;
 
     let batch: Vec<BatchVerificationRow> = relevant_win_conditions
         .into_iter()
@@ -291,14 +323,18 @@ pub(crate) fn verify_split_tx_aggregated_signatures(
             let split_tx = split_build_out
                 .split_txs()
                 .get(&win_cond.outcome)
-                .ok_or(Error)?;
+                .ok_or(Error::UnknownOutcome)?;
 
-            let signature = split_tx_signatures.get(&win_cond).ok_or(Error)?;
+            let signature = split_tx_signatures
+                .get(&win_cond)
+                .ok_or(Error::MissingSignature(String::from(
+                    "split tx signature for win condition",
+                )))?;
 
             let outcome_spend_info = outcome_build_out
                 .outcome_spend_infos()
                 .get(&win_cond.outcome)
-                .ok_or(Error)?;
+                .ok_or(Error::UnknownOutcome)?;
 
             // Expect an untweaked signature by the group, so that the signature
             // can be used to trigger one of the players' split tapscripts.
@@ -335,13 +371,16 @@ pub(crate) fn split_tx_prevout<'x>(
     let split_tx = split_build_out
         .split_txs()
         .get(&win_cond.outcome)
-        .ok_or(Error)?;
+        .ok_or(Error::UnknownOutcome)?;
 
-    let payout_map = params.outcome_payouts.get(&win_cond.outcome).ok_or(Error)?;
+    let payout_map = params
+        .outcome_payouts
+        .get(&win_cond.outcome)
+        .ok_or(Error::UnknownOutcome)?;
     let split_tx_output_index = payout_map
         .keys()
         .position(|&player_index| player_index == win_cond.player_index)
-        .ok_or(Error)?;
+        .ok_or(Error::OutOfBoundsPlayerIndex)?;
 
     let input = TxIn {
         previous_output: OutPoint {
@@ -352,7 +391,10 @@ pub(crate) fn split_tx_prevout<'x>(
         ..TxIn::default()
     };
 
-    let prevout = split_tx.output.get(split_tx_output_index).ok_or(Error)?;
+    let prevout = split_tx
+        .output
+        .get(split_tx_output_index)
+        .ok_or(Error::InvalidInput("missing split tx output"))?;
 
     Ok((input, prevout))
 }

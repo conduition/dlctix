@@ -58,7 +58,7 @@ impl OutcomeSpendInfo {
         let winners: BTreeMap<PlayerIndex, &Player> = winner_indexes
             .into_iter()
             .map(|i| {
-                let player = all_players.get(i).ok_or(Error)?;
+                let player = all_players.get(i).ok_or(Error::OutOfBoundsPlayerIndex)?;
                 Ok((i, player.borrow()))
             })
             .collect::<Result<_, Error>>()?;
@@ -216,7 +216,10 @@ impl OutcomeSpendInfo {
             script_pubkey: self.script_pubkey(),
             value: self.outcome_value,
         }];
-        let split_script = self.winner_split_scripts.get(player_index).ok_or(Error)?;
+        let split_script = self
+            .winner_split_scripts
+            .get(player_index)
+            .ok_or(Error::OutOfBoundsPlayerIndex)?;
         let leaf_hash = TapLeafHash::from_script(split_script, LeafVersion::TapScript);
 
         let sighash = SighashCache::new(split_tx).taproot_script_spend_signature_hash(
@@ -238,12 +241,12 @@ impl OutcomeSpendInfo {
         let split_script = self
             .winner_split_scripts
             .get(player_index)
-            .ok_or(Error)?
+            .ok_or(Error::OutOfBoundsPlayerIndex)?
             .clone();
         let control_block = self
             .spend_info
             .control_block(&(split_script.clone(), LeafVersion::TapScript))
-            .ok_or(Error)?;
+            .ok_or(Error::InvalidKey)?;
 
         let mut witness = Witness::new();
         witness.push(signature.serialize());
@@ -319,7 +322,12 @@ impl OutcomeSpendInfo {
                 if pubkey == mm_pubkey {
                     Ok(market_maker_secret_key)
                 } else {
-                    player_secret_keys.get(&pubkey).ok_or(Error).copied()
+                    player_secret_keys
+                        .get(&pubkey)
+                        .ok_or(Error::MissingSignature(String::from(
+                            "player secret keys for pubkey",
+                        )))
+                        .copied()
                 }
             })
             .collect::<Result<_, Error>>()?;
