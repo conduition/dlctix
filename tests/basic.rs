@@ -1,4 +1,5 @@
 use dlctix::bitcoin;
+use dlctix::convert_xonly_key;
 use dlctix::musig2;
 use dlctix::secp::{MaybePoint, Point, Scalar};
 use dlctix::{
@@ -536,7 +537,8 @@ fn wait_for_confs(_: &bitcoin::Txid, _: u16) {}
 /// Generate a P2TR script pubkey which pays to the given pubkey (no tweak added).
 fn p2tr_script_pubkey(pubkey: Point) -> bitcoin::ScriptBuf {
     let (xonly, _) = pubkey.into();
-    let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly);
+    let tweaked =
+        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(convert_xonly_key(xonly));
     bitcoin::ScriptBuf::new_p2tr_tweaked(tweaked)
 }
 

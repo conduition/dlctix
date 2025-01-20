@@ -28,14 +28,14 @@ use std::{
 /// Generate a P2TR address which pays to the given pubkey (no tweak added).
 fn p2tr_address(pubkey: Point) -> Address {
     let (xonly, _) = pubkey.into();
-    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(xonly);
+    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(convert_xonly_key(xonly));
     Address::p2tr_tweaked(tweaked, Network::Regtest)
 }
 
 /// Generate a P2TR script pubkey which pays to the given pubkey (no tweak added).
 fn p2tr_script_pubkey(pubkey: Point) -> ScriptBuf {
     let (xonly, _) = pubkey.into();
-    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(xonly);
+    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(convert_xonly_key(xonly));
     ScriptBuf::new_p2tr_tweaked(tweaked)
 }
 

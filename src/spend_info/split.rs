@@ -12,6 +12,7 @@ use secp::{Point, Scalar};
 use std::borrow::Borrow;
 
 use crate::{
+    convert_point,
     errors::Error,
     hashlock::{Preimage, PREIMAGE_SIZE},
     parties::{MarketMaker, Player},
@@ -99,9 +100,11 @@ impl SplitSpendInfo {
             (1, win_script.clone()),
             (1, reclaim_script.clone()),
         ];
+
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
         let tr_spend_info = TaprootSpendInfo::with_huffman_tree(
-            secp256k1::SECP256K1,
-            joint_payout_pubkey.into(),
+            &secp,
+            convert_point(joint_payout_pubkey),
             weighted_script_leaves,
         )?;
 

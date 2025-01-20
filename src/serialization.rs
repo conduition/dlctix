@@ -141,19 +141,79 @@ impl<'de> Deserialize<'de> for TicketedDLC {
     }
 }
 
+pub(crate) mod point {
+    use crate::secp::Point;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(point: &Point, ser: S) -> Result<S::Ok, S::Error> {
+        if ser.is_human_readable() {
+            // For JSON, use hex encoding
+            ser.serialize_str(&hex::encode(point.serialize()))
+        } else {
+            // For CBOR, use tag 98 followed by bytes
+            use serde::ser::SerializeSeq;
+            let bytes = point.serialize();
+            let mut seq = ser.serialize_seq(Some(bytes.len()))?;
+            for &b in &bytes {
+                seq.serialize_element(&b)?;
+            }
+            seq.end()
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Point, D::Error> {
+        use serde::de::Error;
+        if deserializer.is_human_readable() {
+            // For JSON, expect hex string
+            let hex_str = String::deserialize(deserializer)?;
+            let bytes = hex::decode(hex_str).map_err(D::Error::custom)?;
+            Point::from_slice(&bytes).map_err(D::Error::custom)
+        } else {
+            // For CBOR, handle sequence of bytes
+            let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
+            Point::from_slice(&bytes).map_err(D::Error::custom)
+        }
+    }
+}
+
 pub(crate) mod byte_array {
-    use serde::{Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub(crate) fn serialize<S: Serializer>(value: &[u8; 32], ser: S) -> Result<S::Ok, S::Error> {
-        serdect::array::serialize_hex_lower_or_bin(value, ser)
+        if ser.is_human_readable() {
+            // For JSON, use hex encoding
+            ser.serialize_str(&hex::encode(value))
+        } else {
+            // For CBOR, use sequence format
+            use serde::ser::SerializeSeq;
+            let mut seq = ser.serialize_seq(Some(32))?;
+            for &b in value {
+                seq.serialize_element(&b)?;
+            }
+            seq.end()
+        }
     }
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<[u8; 32], D::Error> {
-        let mut bytes = [0u8; 32];
-        serdect::array::deserialize_hex_or_bin(&mut bytes, deserializer)?;
-        Ok(bytes)
+        use serde::de::Error;
+        if deserializer.is_human_readable() {
+            // For JSON, decode from hex string
+            let s = String::deserialize(deserializer)?;
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(&s, &mut bytes)
+                .map_err(|_| Error::custom("invalid hex string"))?;
+            Ok(bytes)
+        } else {
+            // For CBOR, decode from byte sequence
+            let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
+            bytes
+                .try_into()
+                .map_err(|_| Error::custom("expected 32 bytes"))
+        }
     }
 }
 
