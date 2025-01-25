@@ -51,32 +51,18 @@ use std::{
 
 /// Used to convert musig2 xonly key into bitcoin xonly key only needed
 /// until crate bitcoin updates secp256k1 to v0.30
-/// will be removed/deprecated once the dependency has upgrade
+/// will be removed/deprecated once the dependency has upgraded
 pub fn convert_xonly_key(key: Musig2XOnly) -> BitcoinXOnly {
-    let serialized = key.serialize();
-
-    // Create a fixed size array for the x-coordinate
-    let x_bytes: [u8; 32] = if serialized.len() == 32 {
-        serialized.try_into().expect("Length already checked")
-    } else if serialized.len() == 33 {
-        serialized[1..]
-            .try_into()
-            .expect("Slice to array conversion failed")
-    } else {
-        panic!("Unexpected key length: {}", serialized.len())
-    };
-
-    BitcoinXOnly::from_slice(&x_bytes).expect("Valid key")
+    BitcoinXOnly::from_slice(&key.serialize()).expect("Valid key")
 }
 
 /// Used to convert secp point into bitcoin xonly key
 /// only needed until crate bitcoin updates secp256k1 to v0.30
-/// will be removed/deprecated once the dependency has upgrade
+/// will be removed/deprecated once the dependency has upgraded
 pub fn convert_point(key: Point) -> BitcoinXOnly {
-    let serialized = key.serialize(); // This gives us 33 bytes (compressed format)
-                                      // Skip the first byte (compression prefix) to get just the x-coordinate
+    let serialized = key.serialize();
     let x_only_bytes = &serialized[1..];
-    BitcoinXOnly::from_slice(x_only_bytes).expect("Valid key")
+    BitcoinXOnly::from_slice(&x_only_bytes).expect("Valid key")
 }
 
 /// Represents the combined output of building all transactions and precomputing

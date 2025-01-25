@@ -1312,8 +1312,8 @@ fn stress_test() {
     let mut rng = rand::rngs::StdRng::from_seed([0; 32]);
 
     // Stress-testing parameters.
-    let n_players = 20;
-    let n_outcomes = 6;
+    let n_players = 50;
+    let n_outcomes = 50;
     let winners_per_outcome = 2;
 
     let simulated_players: Vec<SimulatedPlayer> = (0..n_players)
