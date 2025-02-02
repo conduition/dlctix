@@ -60,9 +60,7 @@ pub fn convert_xonly_key(key: Musig2XOnly) -> BitcoinXOnly {
 /// only needed until crate bitcoin updates secp256k1 to v0.30
 /// will be removed/deprecated once the dependency has upgraded
 pub fn convert_point(key: Point) -> BitcoinXOnly {
-    let serialized = key.serialize();
-    let x_only_bytes = &serialized[1..];
-    BitcoinXOnly::from_slice(&x_only_bytes).expect("Valid key")
+    BitcoinXOnly::from_slice(&key.serialize_xonly()).expect("Valid key")
 }
 
 /// Represents the combined output of building all transactions and precomputing

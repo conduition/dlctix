@@ -29,7 +29,6 @@ pub struct Player {
     /// payout, they can choose to reveal their secret key to the market
     /// maker, which allows the market maker to use key-spending (instead
     /// of inefficient script spending) to reclaim the on-chain capital.
-    #[serde(with = "serialization::point")]
     pub pubkey: Point,
 
     /// The ticket hashes used for HTLCs. To buy into the DLC, players must
