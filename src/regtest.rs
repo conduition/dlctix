@@ -753,7 +753,7 @@ fn with_on_chain_resolutions() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -813,7 +813,6 @@ fn with_on_chain_resolutions() {
                 manager.market_maker_seckey,
             )
             .expect("failed to sign win TX");
-
         let err = manager
             .rpc
             .send_raw_transaction(&invalid_reclaim_tx)
@@ -821,7 +820,7 @@ fn with_on_chain_resolutions() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -1032,7 +1031,7 @@ fn market_maker_reclaims_outcome_tx() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
@@ -1170,7 +1169,7 @@ fn contract_expiry_on_chain_resolution() {
         assert_eq!(
             err.to_string(),
             "JSON-RPC error: RPC error response: RpcError { code: -26, \
-             message: \"non-mandatory-script-verify-flag (Locktime requirement not satisfied)\", \
+             message: \"mandatory-script-verify-flag-failed (Locktime requirement not satisfied)\", \
              data: None }",
         );
     }
