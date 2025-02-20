@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "dlctix"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
