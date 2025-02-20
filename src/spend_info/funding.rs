@@ -6,6 +6,7 @@ use musig2::{CompactSignature, KeyAggContext};
 use secp::{Point, Scalar};
 
 use crate::{
+    convert_xonly_key,
     errors::Error,
     parties::{MarketMaker, Player},
 };
@@ -57,7 +58,8 @@ impl FundingSpendInfo {
         // This is safe because the musig key aggregation formula prevents
         // participants from hiding tapscript commitments in the aggregated key.
         let (xonly, _) = self.key_agg_ctx.aggregated_pubkey();
-        let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly);
+        let tweaked =
+            bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(convert_xonly_key(xonly));
         ScriptBuf::new_p2tr_tweaked(tweaked)
     }
 
@@ -65,7 +67,7 @@ impl FundingSpendInfo {
     pub(crate) fn sighash_tx_outcome(
         &self,
         outcome_tx: &Transaction,
-    ) -> Result<TapSighash, bitcoin::sighash::Error> {
+    ) -> Result<TapSighash, bitcoin::sighash::TaprootError> {
         let funding_prevouts = [self.funding_output()];
 
         SighashCache::new(outcome_tx).taproot_key_spend_signature_hash(

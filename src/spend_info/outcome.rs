@@ -13,6 +13,7 @@ use secp::{Point, Scalar};
 
 use crate::{
     contract::PlayerIndex,
+    convert_point,
     errors::Error,
     hashlock::{Preimage, PREIMAGE_SIZE},
     parties::{MarketMaker, Player},
@@ -111,9 +112,10 @@ impl OutcomeSpendInfo {
             .map(|script| (1, script))
             .chain([(u32::MAX, reclaim_script.clone())]); // reclaim script gets highest priority
 
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
         let tr_spend_info = TaprootSpendInfo::with_huffman_tree(
-            secp256k1::SECP256K1,
-            joint_outcome_pubkey.into(),
+            &secp,
+            convert_point(joint_outcome_pubkey.into()),
             weighted_script_leaves,
         )?;
 

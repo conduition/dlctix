@@ -28,22 +28,40 @@ use errors::Error;
 use hashlock::{sha256, Preimage};
 
 use bitcoin::{
-    sighash::Prevouts, transaction::InputWeightPrediction, OutPoint, Transaction, TxIn, TxOut,
+    secp256k1::XOnlyPublicKey as BitcoinXOnly, sighash::Prevouts,
+    transaction::InputWeightPrediction, OutPoint, Transaction, TxIn, TxOut,
 };
-use musig2::{AdaptorSignature, AggNonce, CompactSignature, PartialSignature, PubNonce, SecNonce};
+use musig2::{
+    secp256k1::XOnlyPublicKey as Musig2XOnly, AdaptorSignature, AggNonce, CompactSignature,
+    PartialSignature, PubNonce, SecNonce,
+};
 use secp::{MaybeScalar, Point, Scalar};
 use serde::{Deserialize, Serialize};
-
-use std::{
-    borrow::Borrow,
-    collections::{BTreeMap, BTreeSet},
-};
 
 pub use contract::{
     ContractParameters, Outcome, OutcomeIndex, PayoutWeights, PlayerIndex, SigMap, WinCondition,
 };
 pub use oracles::{attestation_locking_point, attestation_secret, EventLockingConditions};
 pub use parties::{MarketMaker, Player};
+
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, BTreeSet},
+};
+
+/// Used to convert musig2 xonly key into bitcoin xonly key only needed
+/// until crate bitcoin updates secp256k1 to v0.30
+/// will be removed/deprecated once the dependency has upgraded
+pub fn convert_xonly_key(key: Musig2XOnly) -> BitcoinXOnly {
+    BitcoinXOnly::from_slice(&key.serialize()).expect("Valid key")
+}
+
+/// Used to convert secp point into bitcoin xonly key
+/// only needed until crate bitcoin updates secp256k1 to v0.30
+/// will be removed/deprecated once the dependency has upgraded
+pub fn convert_point(key: Point) -> BitcoinXOnly {
+    BitcoinXOnly::from_slice(&key.serialize_xonly()).expect("Valid key")
+}
 
 /// Represents the combined output of building all transactions and precomputing
 /// all necessary data for a ticketed DLC.

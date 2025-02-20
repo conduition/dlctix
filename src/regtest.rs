@@ -28,14 +28,14 @@ use std::{
 /// Generate a P2TR address which pays to the given pubkey (no tweak added).
 fn p2tr_address(pubkey: Point) -> Address {
     let (xonly, _) = pubkey.into();
-    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(xonly);
+    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(convert_xonly_key(xonly));
     Address::p2tr_tweaked(tweaked, Network::Regtest)
 }
 
 /// Generate a P2TR script pubkey which pays to the given pubkey (no tweak added).
 fn p2tr_script_pubkey(pubkey: Point) -> ScriptBuf {
     let (xonly, _) = pubkey.into();
-    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(xonly);
+    let tweaked = TweakedPublicKey::dangerous_assume_tweaked(convert_xonly_key(xonly));
     ScriptBuf::new_p2tr_tweaked(tweaked)
 }
 
@@ -523,7 +523,7 @@ impl SimulationManager {
             &mm_utxo_prevout,
         );
         let funding_outpoint = OutPoint {
-            txid: funding_tx.txid(),
+            txid: funding_tx.compute_txid(),
             vout: 0,
         };
 
@@ -813,7 +813,6 @@ fn with_on_chain_resolutions() {
                 manager.market_maker_seckey,
             )
             .expect("failed to sign win TX");
-
         let err = manager
             .rpc
             .send_raw_transaction(&invalid_reclaim_tx)
