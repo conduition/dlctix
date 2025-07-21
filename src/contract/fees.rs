@@ -16,7 +16,7 @@ where
     O: IntoIterator<Item = usize>,
 {
     let tx_weight = bitcoin::transaction::predict_weight(input_weights, output_spk_lens);
-    let fee = fee_rate.fee_wu(tx_weight).ok_or(Error)?;
+    let fee = fee_rate.fee_wu(tx_weight).ok_or(Error::WeightOverflow)?;
     Ok(fee)
 }
 
@@ -29,11 +29,13 @@ pub(crate) fn fee_subtract_safe(
     dust_threshold: Amount,
 ) -> Result<Amount, Error> {
     if fee >= available_coins {
-        return Err(Error);
+        return Err(Error::InsufficientFunds);
     }
-    let after_fee = available_coins.checked_sub(fee).ok_or(Error)?;
+    let after_fee = available_coins
+        .checked_sub(fee)
+        .ok_or(Error::InvalidFeeAmount)?;
     if after_fee <= dust_threshold {
-        return Err(Error);
+        return Err(Error::DustAmount);
     }
     Ok(after_fee)
 }

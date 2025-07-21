@@ -125,46 +125,46 @@ impl ContractParameters {
 
         // This would imply the players array contains duplicate ticket hashes.
         if uniq_ticket_hashes.len() != self.players.len() {
-            return Err(Error);
+            return Err(Error::DuplicateTicketHash);
         }
 
         for (outcome, payout_map) in self.outcome_payouts.iter() {
             // Check for unknown outcomes.
             if !self.event.is_valid_outcome(outcome) {
-                return Err(Error);
+                return Err(Error::UnknownOutcome);
             }
 
             // Check for empty payout map.
             if payout_map.len() == 0 {
-                return Err(Error);
+                return Err(Error::EmptyPayoutMap);
             }
 
             for (&player_index, &weight) in payout_map.iter() {
                 // Check for zero payout weights.
                 if weight == 0 {
-                    return Err(Error);
+                    return Err(Error::InvalidPayoutWeight);
                 }
 
                 // Check for out-of-bounds player indexes.
                 if player_index >= self.players.len() {
-                    return Err(Error);
+                    return Err(Error::OutOfBoundsPlayerIndex);
                 }
             }
         }
 
         // Must use a non-zero fee rate.
         if self.fee_rate == FeeRate::ZERO {
-            return Err(Error);
+            return Err(Error::InvalidFeeAmount);
         }
 
         // Must use a non-zero locktime delta
         if self.relative_locktime_block_delta == 0 {
-            return Err(Error);
+            return Err(Error::InvalidLocktime);
         }
 
         // Must be funded by some fixed non-zero amount.
         if self.funding_value < Amount::ZERO {
-            return Err(Error);
+            return Err(Error::InsufficientFunds);
         }
 
         Ok(())

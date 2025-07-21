@@ -202,7 +202,10 @@ impl SigningSession<NonceSharingRound> {
         let signing_key = signing_key.into();
         let our_public_key = signing_key.base_point_mul();
 
-        let base_sigmap = dlc.params.sigmap_for_pubkey(our_public_key).ok_or(Error)?;
+        let base_sigmap = dlc
+            .params
+            .sigmap_for_pubkey(our_public_key)
+            .ok_or(Error::InvalidKey)?;
 
         let our_secret_nonces =
             base_sigmap.map_values(|_| SecNonce::build(&mut rng).with_seckey(signing_key).build());
@@ -344,11 +347,14 @@ impl SigningSession<CoordinatorPartialSignatureSharingRound> {
         signer_pubkey: Point,
         partial_signatures: &SigMap<PartialSignature>,
     ) -> Result<(), Error> {
-        let signer_nonces = self
-            .state
-            .received_nonces
-            .get(&signer_pubkey)
-            .ok_or(Error)?;
+        let signer_nonces =
+            self.state
+                .received_nonces
+                .get(&signer_pubkey)
+                .ok_or(Error::MissingNonce(format!(
+                    "no nonces received from signer with pubkey {:?}",
+                    signer_pubkey
+                )))?;
 
         contract::outcome::verify_outcome_tx_partial_signatures(
             &self.dlc.params,
@@ -528,21 +534,29 @@ fn validate_sigmaps_completeness<T>(
 ) -> Result<(), Error> {
     // Must receive signatures/nonces from all players and the market maker.
     if !received_maps.contains_key(&params.market_maker.pubkey) {
-        return Err(Error);
+        return Err(Error::MissingSignature(format!(
+            "market makert pubkey: {}",
+            params.market_maker.pubkey
+        )));
     }
     for player in params.players.iter() {
         if !received_maps.contains_key(&player.pubkey) {
-            return Err(Error);
+            return Err(Error::MissingSignature(format!(
+                "player pubkey: {}",
+                player.pubkey
+            )));
         }
     }
 
     for (&signer_pubkey, sigmap) in received_maps.iter() {
         // The expected sigmap each signer must provide nonces/signatures for.
-        let base_sigmap = params.sigmap_for_pubkey(signer_pubkey).ok_or(Error)?;
+        let base_sigmap = params
+            .sigmap_for_pubkey(signer_pubkey)
+            .ok_or(Error::InvalidKey)?;
 
         // All signers' sigmaps must match exactly.
         if !sigmap.is_mirror(&base_sigmap) {
-            return Err(Error);
+            return Err(Error::InvalidSignature);
         }
     }
 
@@ -673,25 +687,30 @@ impl SignedContract {
             .event
             .locking_points
             .get(outcome_index)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         // Invalid attestation.
         if &attestation.base_point_mul() != locking_point {
-            return Err(Error)?;
+            return Err(Error::InvalidSignature)?;
         }
 
         let mut outcome_tx = self
             .unsigned_outcome_tx(outcome_index)
-            .ok_or(Error)?
+            .ok_or(Error::UnknownOutcome)?
             .clone();
 
         let adaptor_signature = self
             .signatures
             .outcome_tx_signatures
             .get(&outcome_index)
-            .ok_or(Error)?;
+            .ok_or(Error::MissingSignature(format!(
+                "adaptor signature for outcome index {}",
+                outcome_index
+            )))?;
 
-        let compact_sig: CompactSignature = adaptor_signature.adapt(attestation).ok_or(Error)?;
+        let compact_sig: CompactSignature = adaptor_signature
+            .adapt(attestation)
+            .ok_or(Error::InvalidSignature)?;
 
         outcome_tx.input[0].witness.push(compact_sig.serialize());
         Ok(outcome_tx)
@@ -728,26 +747,28 @@ impl SignedContract {
             .players
             .get(win_cond.player_index)
             .cloned()
-            .ok_or(Error)?;
+            .ok_or(Error::OutOfBoundsPlayerIndex)?;
 
         // Verify the preimage will unlock this specific player's split TX
         // condition.
         if sha256(&ticket_preimage) != winner.ticket_hash {
-            return Err(Error);
+            return Err(Error::InvalidInput("ticket preimage does not match hash"));
         }
 
-        let signature = self
-            .signatures
-            .split_tx_signatures
-            .get(win_cond)
-            .ok_or(Error)?;
+        let signature =
+            self.signatures
+                .split_tx_signatures
+                .get(win_cond)
+                .ok_or(Error::MissingSignature(String::from(
+                    "split tx signature for win condition",
+                )))?;
 
         let outcome_spend_info = self
             .dlc
             .outcome_tx_build
             .outcome_spend_infos()
             .get(&win_cond.outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = outcome_spend_info.witness_tx_split(
             signature,
@@ -757,7 +778,7 @@ impl SignedContract {
 
         let mut split_tx = self
             .unsigned_split_tx(&win_cond.outcome)
-            .ok_or(Error)?
+            .ok_or(Error::UnknownOutcome)?
             .clone();
 
         split_tx.input[0].witness = witness;
@@ -945,7 +966,7 @@ impl SignedContract {
             .outcome_tx_build
             .outcome_spend_infos()
             .get(outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = outcome_spend_info.witness_tx_reclaim(
             reclaim_tx,
@@ -978,7 +999,7 @@ impl SignedContract {
     ) -> Result<(), Error> {
         let market_maker_secret_key = market_maker_secret_key.into();
         if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         }
 
         // Confirm we're signing the correct input
@@ -1025,14 +1046,18 @@ impl SignedContract {
     ) -> Result<(), Error> {
         let market_maker_secret_key = market_maker_secret_key.into();
         if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         }
 
         // Confirm we're signing the correct input
         let (mut expected_input, expected_prevout) = self.funding_close_tx_input_and_prevout();
 
         // The caller can use whatever sequence they want.
-        expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
+        expected_input.sequence = close_tx
+            .input
+            .get(input_index)
+            .ok_or(Error::InvalidInput("transaction input index out of bounds"))?
+            .sequence;
 
         check_input_matches_expected(
             close_tx,
@@ -1081,7 +1106,7 @@ impl SignedContract {
     ) -> Result<(), Error> {
         let market_maker_secret_key = market_maker_secret_key.into();
         if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         }
 
         // Confirm we're signing the correct input
@@ -1089,7 +1114,11 @@ impl SignedContract {
             self.outcome_close_tx_input_and_prevout(outcome)?;
 
         // The caller can use whatever sequence they want.
-        expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
+        expected_input.sequence = close_tx
+            .input
+            .get(input_index)
+            .ok_or(Error::InvalidInput("transaction input index out of bounds"))?
+            .sequence;
 
         check_input_matches_expected(
             close_tx,
@@ -1104,7 +1133,7 @@ impl SignedContract {
             .outcome_tx_build
             .outcome_spend_infos()
             .get(outcome)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = outcome_spend_info.witness_tx_close(
             close_tx,
@@ -1132,7 +1161,7 @@ impl SignedContract {
             .split_tx_build
             .split_spend_infos()
             .get(win_cond)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = split_spend_info.witness_tx_win(
             win_tx,
@@ -1172,13 +1201,13 @@ impl SignedContract {
             .players
             .get(win_cond.player_index)
             .cloned()
-            .ok_or(Error)?;
+            .ok_or(Error::OutOfBoundsPlayerIndex)?;
 
         let player_secret_key = player_secret_key.into();
         if player_secret_key.base_point_mul() != winner.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         } else if sha256(&ticket_preimage) != winner.ticket_hash {
-            return Err(Error);
+            return Err(Error::InvalidInput("ticket preimage does not match hash"));
         }
 
         // Confirm we're signing the correct input
@@ -1214,7 +1243,7 @@ impl SignedContract {
             .split_tx_build
             .split_spend_infos()
             .get(win_cond)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = split_spend_info.witness_tx_reclaim(
             reclaim_tx,
@@ -1246,7 +1275,7 @@ impl SignedContract {
     ) -> Result<(), Error> {
         let market_maker_secret_key = market_maker_secret_key.into();
         if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         }
 
         // Confirm we're signing the correct input
@@ -1295,7 +1324,7 @@ impl SignedContract {
     ) -> Result<(), Error> {
         let market_maker_secret_key = market_maker_secret_key.into();
         if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         }
 
         // Confirm we're signing the correct input
@@ -1303,7 +1332,11 @@ impl SignedContract {
             self.split_sellback_tx_input_and_prevout(win_cond)?;
 
         // The caller can use whatever sequence they want.
-        expected_input.sequence = sellback_tx.input.get(input_index).ok_or(Error)?.sequence;
+        expected_input.sequence = sellback_tx
+            .input
+            .get(input_index)
+            .ok_or(Error::InvalidInput("transaction input index out of bounds"))?
+            .sequence;
 
         check_input_matches_expected(
             sellback_tx,
@@ -1318,7 +1351,7 @@ impl SignedContract {
             .split_tx_build
             .split_spend_infos()
             .get(win_cond)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = split_spend_info.witness_tx_sellback(
             sellback_tx,
@@ -1360,7 +1393,7 @@ impl SignedContract {
     ) -> Result<(), Error> {
         let market_maker_secret_key = market_maker_secret_key.into();
         if market_maker_secret_key.base_point_mul() != self.dlc.params.market_maker.pubkey {
-            return Err(Error);
+            return Err(Error::InvalidKey);
         }
 
         // Confirm we're signing the correct input
@@ -1368,7 +1401,11 @@ impl SignedContract {
             self.split_sellback_tx_input_and_prevout(win_cond)?;
 
         // The caller can use whatever sequence they want.
-        expected_input.sequence = close_tx.input.get(input_index).ok_or(Error)?.sequence;
+        expected_input.sequence = close_tx
+            .input
+            .get(input_index)
+            .ok_or(Error::InvalidInput("transaction input index out of bounds"))?
+            .sequence;
 
         check_input_matches_expected(
             close_tx,
@@ -1383,7 +1420,7 @@ impl SignedContract {
             .split_tx_build
             .split_spend_infos()
             .get(win_cond)
-            .ok_or(Error)?;
+            .ok_or(Error::UnknownOutcome)?;
 
         let witness = split_spend_info.witness_tx_close(
             close_tx,
@@ -1407,23 +1444,29 @@ fn check_input_matches_expected<T: Borrow<TxOut>>(
     expected_input: &TxIn,
     expected_prevout: &TxOut,
 ) -> Result<(), Error> {
-    let input = tx.input.get(input_index).ok_or(Error)?;
+    let input = tx
+        .input
+        .get(input_index)
+        .ok_or(Error::InvalidInput("transaction input index out of bounds"))?;
     if input != expected_input {
-        return Err(Error);
+        return Err(Error::InvalidInput("input does not match expected"));
     }
 
     let prevout = match prevouts {
-        Prevouts::All(all_prevouts) => all_prevouts.get(input_index).ok_or(Error)?.borrow(),
+        Prevouts::All(all_prevouts) => all_prevouts
+            .get(input_index)
+            .ok_or(Error::InvalidInput("prevout index out of bounds"))?
+            .borrow(),
         Prevouts::One(i, prevout) => {
             if i != &input_index {
-                return Err(Error)?;
+                return Err(Error::InvalidInput("prevout index mismatch"));
             }
             prevout.borrow()
         }
     };
 
     if prevout != expected_prevout {
-        return Err(Error);
+        return Err(Error::InvalidInput("prevout does not match expected"));
     }
 
     Ok(())
