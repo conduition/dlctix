@@ -78,7 +78,7 @@ struct BitcoindSubprocessHandle {
 fn run_bitcoind() -> Option<(BitcoindSubprocessHandle, BitcoinClient)> {
     let dir = TempDir::new("dlctix").expect("error making tempdir");
 
-    let rpc_port: u16 = rand::thread_rng().gen_range(20000..u16::MAX);
+    let rpc_port: u16 = rand::rng().random_range(20000..u16::MAX);
     let p2p_port: u16 = rpc_port + 1;
 
     let child: process::Child = process::Command::new("bitcoind")
@@ -425,7 +425,7 @@ struct SimulationManager {
 
 impl SimulationManager {
     fn new() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Oracle
         let oracle_seckey = Scalar::random(&mut rng);
@@ -1348,7 +1348,7 @@ fn stress_test() {
             let outcome = Outcome::Attestation(i);
             let payout_map = (0..winners_per_outcome)
                 .map(|_| {
-                    let player_index: PlayerIndex = rng.gen_range(0..n_players);
+                    let player_index: PlayerIndex = rng.random_range(0..n_players);
                     (player_index, 1)
                 })
                 .collect();
