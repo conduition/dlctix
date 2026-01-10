@@ -15,6 +15,7 @@ pub(crate) mod serialization;
 pub(crate) mod spend_info;
 
 pub mod hashlock;
+pub mod signing;
 
 pub use bitcoin;
 pub use musig2;
@@ -27,6 +28,7 @@ use contract::{
 use errors::Error;
 use hashlock::{sha256, Preimage};
 
+use bitcoin::hashes::Hash as _;
 use bitcoin::{
     secp256k1::XOnlyPublicKey as BitcoinXOnly, sighash::Prevouts,
     transaction::InputWeightPrediction, OutPoint, Transaction, TxIn, TxOut,
@@ -43,6 +45,7 @@ pub use contract::{
 };
 pub use oracles::{attestation_locking_point, attestation_secret, EventLockingConditions};
 pub use parties::{MarketMaker, Player};
+pub use signing::SigningData;
 
 use std::{
     borrow::Borrow,
@@ -126,6 +129,88 @@ impl TicketedDLC {
         TxOut {
             script_pubkey: self.outcome_tx_build.funding_spend_info().script_pubkey(),
             value: self.params.funding_value,
+        }
+    }
+
+    /// Extract all data needed to sign DLC transactions externally.
+    ///
+    /// This is an alternative to [`SigningSession`] for signing with an external
+    /// system such as an HSM or custom MuSig2 implementation.
+    pub fn signing_data(&self) -> Result<signing::SigningData, Error> {
+        let mut outcome_sighashes = BTreeMap::new();
+        let mut adaptor_points = BTreeMap::new();
+        let mut split_sighashes = BTreeMap::new();
+        let mut split_agg_pubkeys = BTreeMap::new();
+
+        let funding_spend_info = self.outcome_tx_build.funding_spend_info();
+
+        // Collect outcome transaction sighashes
+        for (outcome, outcome_tx) in self.outcome_tx_build.outcome_txs() {
+            let sighash = funding_spend_info.sighash_tx_outcome(outcome_tx)?;
+            outcome_sighashes.insert(*outcome, *sighash.as_byte_array());
+
+            // Store adaptor points for attestation outcomes
+            if let Outcome::Attestation(idx) = outcome {
+                if let Some(point) = self.params.event.locking_points.get(*idx) {
+                    adaptor_points.insert(*idx, *point);
+                }
+            }
+        }
+
+        // Collect split transaction sighashes
+        for (outcome, split_tx) in self.split_tx_build.split_txs() {
+            let outcome_spend_info = self
+                .outcome_tx_build
+                .outcome_spend_infos()
+                .get(outcome)
+                .ok_or(Error::UnknownOutcome)?;
+
+            // Store the untweaked aggregate pubkey for this outcome
+            let agg_pubkey: Point = outcome_spend_info
+                .key_agg_ctx_untweaked()
+                .aggregated_pubkey();
+            split_agg_pubkeys.insert(*outcome, agg_pubkey);
+
+            // Get sighashes for each win condition
+            if let Some(payout_map) = self.params.outcome_payouts.get(outcome) {
+                for &player_index in payout_map.keys() {
+                    let sighash = outcome_spend_info.sighash_tx_split(split_tx, &player_index)?;
+                    let win_cond = WinCondition {
+                        outcome: *outcome,
+                        player_index,
+                    };
+                    split_sighashes.insert(win_cond, *sighash.as_byte_array());
+                }
+            }
+        }
+
+        // Get the tweaked funding aggregate pubkey
+        let funding_agg_pubkey: Point = funding_spend_info.key_agg_ctx().aggregated_pubkey();
+
+        Ok(signing::SigningData {
+            outcome_sighashes,
+            adaptor_points,
+            split_sighashes,
+            funding_agg_pubkey,
+            split_agg_pubkeys,
+        })
+    }
+
+    /// Returns references to all unsigned outcome transactions.
+    pub fn unsigned_outcome_txs(&self) -> &BTreeMap<Outcome, Transaction> {
+        self.outcome_tx_build.outcome_txs()
+    }
+
+    /// Returns references to all unsigned split transactions.
+    pub fn unsigned_split_txs(&self) -> &BTreeMap<Outcome, Transaction> {
+        self.split_tx_build.split_txs()
+    }
+
+    /// Construct a [`SignedContract`] from externally-provided signatures.
+    pub fn into_signed_contract(self, signatures: ContractSignatures) -> SignedContract {
+        SignedContract {
+            signatures,
+            dlc: self,
         }
     }
 }
