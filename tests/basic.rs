@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 #[test]
 fn two_player_example() -> Result<(), Box<dyn std::error::Error>> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Define the players' secret data. Each player would normally generate
     // and store their own secret key and payout preimage on their own machine.
